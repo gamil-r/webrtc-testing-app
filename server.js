@@ -142,6 +142,9 @@ function handleMessage(clientId, message) {
         case 'call-request':
             handleCallRequest(clientId, message);
             break;
+        case 'hang-up':
+            handleHangUp(clientId, message);
+            break;
         case 'offer':
             handleOffer(clientId, message);
             break;
@@ -213,6 +216,27 @@ function handleCallRequest(clientId, message) {
             type: 'error',
             message: `Camera ${cameraId} not available`
         });
+    }
+}
+
+function handleHangUp(clientId, message) {
+    const cameraId = message.cameraId;
+    const client = clients.get(clientId);
+    const clientType = client ? client.type : 'unknown';
+    
+    log(`Hang-up request for camera ${cameraId} from ${clientType} client ${clientId}`);
+    
+    // Forward hang-up request to the camera's Android client
+    const success = sendToAndroidClient(cameraId, {
+        type: 'hang-up',
+        cameraId: cameraId,
+        fromClient: clientId
+    });
+    
+    if (success) {
+        log(`Hang-up request forwarded to camera ${cameraId}`);
+    } else {
+        log(`Failed to forward hang-up request - camera ${cameraId} not available`);
     }
 }
 

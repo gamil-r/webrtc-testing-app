@@ -13,9 +13,14 @@ class WebRTCSignalingClient {
         this.statsIntervals = new Map(); // Map of cameraId -> interval ID
         this.streamStats = new Map(); // Map of cameraId -> stats object
         
+        // Floating stats panel
+        this.floatingStatsContent = document.getElementById('floatingStatsContent');
+        this.previousStats = new Map(); // Map of cameraId -> previous stats for calculations
+        
         this.initializeWebSocket();
         this.setupGlobalStats();
         this.startGlobalStatsUpdate();
+        this.initializeFloatingStats();
     }
     
     initializeWebSocket() {
@@ -37,14 +42,16 @@ class WebRTCSignalingClient {
         };
         
         this.socket.onclose = (event) => {
-            this.log('WebSocket connection closed', 'error', {
+            this.log('WebSocket connection closed - affecting all cameras', 'error', {
                 code: event.code,
                 reason: event.reason,
                 wasClean: event.wasClean,
+                activeCameras: this.cameras.size,
+                activeStreams: this.activeStreams.size,
                 timestamp: new Date().toISOString()
             });
             this.updateConnectionStatus(false);
-            this.handleDisconnection();
+            this.handleGlobalDisconnection();
         };
         
         this.socket.onerror = (error) => {
@@ -138,8 +145,16 @@ class WebRTCSignalingClient {
             if (state === 'connected') {
                 this.startStatsCollection(cameraId);
             } else if (state === 'disconnected' || state === 'failed') {
-                this.stopStatsCollection(cameraId);
-                this.handleStreamEnded(cameraId);
+                // Only handle automatic disconnections, not manual hang-ups
+                if (this.peerConnections.has(cameraId)) {
+                    this.log(`Automatic disconnection detected for camera ${cameraId}`, 'warning', {
+                        cameraId,
+                        connectionState: state,
+                        timestamp: new Date().toISOString()
+                    });
+                    this.stopStatsCollection(cameraId);
+                    this.handleStreamEnded(cameraId);
+                }
             }
         };
         
@@ -362,6 +377,7 @@ class WebRTCSignalingClient {
         // Update camera streaming state
         if (this.cameras.has(cameraId)) {
             this.cameras.get(cameraId).streaming = true;
+            this.cameras.get(cameraId).streamId = stream.id;
         }
         
         // Create or update video element
@@ -372,6 +388,7 @@ class WebRTCSignalingClient {
         this.updateCameraList();
         this.updateGlobalStats();
         this.updateStreamsGrid();
+        this.updateFloatingStats();
     }
     
     handleStreamEnded(cameraId) {
@@ -406,10 +423,14 @@ class WebRTCSignalingClient {
         // Stop stats collection
         this.stopStatsCollection(cameraId);
         
+        // Clean up stats data
+        this.previousStats.delete(cameraId);
+        
         // Update UI
         this.updateCameraList();
         this.updateGlobalStats();
         this.updateStreamsGrid();
+        this.updateFloatingStats();
     }
     
     createOrUpdateStreamElement(cameraId, stream) {
@@ -481,13 +502,13 @@ class WebRTCSignalingClient {
         if (!camera) return;
         
         if (camera.streaming) {
-            // Hang up
+            // Hang up - manual disconnect
             this.log(`Hanging up call to camera ${cameraId}`, 'info', {
                 cameraId,
                 timestamp: new Date().toISOString()
             });
             
-            this.handleStreamEnded(cameraId);
+            this.hangUpCamera(cameraId);
         } else {
             // Start call
             this.log(`Initiating call to camera ${cameraId}`, 'info', {
@@ -504,6 +525,55 @@ class WebRTCSignalingClient {
                 cameraId: cameraId
             });
         }
+    }
+    
+    hangUpCamera(cameraId) {
+        this.log(`Manually hanging up camera ${cameraId}`, 'info', {
+            cameraId,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Update camera streaming state first
+        if (this.cameras.has(cameraId)) {
+            this.cameras.get(cameraId).streaming = false;
+        }
+        
+        // Remove from active streams
+        this.activeStreams.delete(cameraId);
+        
+        // Stop stats collection for this camera only
+        this.stopStatsCollection(cameraId);
+        
+        // Clean up stats data
+        this.previousStats.delete(cameraId);
+        
+        // Close peer connection for this camera only
+        if (this.peerConnections.has(cameraId)) {
+            const peerConnection = this.peerConnections.get(cameraId);
+            peerConnection.close();
+            this.peerConnections.delete(cameraId);
+        }
+        
+        // Remove stream element for this camera only
+        if (this.streamElements.has(cameraId)) {
+            const element = this.streamElements.get(cameraId);
+            if (element.parentNode) {
+                element.parentNode.remove();
+            }
+            this.streamElements.delete(cameraId);
+        }
+        
+        // Update UI (this should only affect this camera)
+        this.updateCameraList();
+        this.updateGlobalStats();
+        this.updateStreamsGrid();
+        this.updateFloatingStats();
+        
+        // Send hang-up message to server
+        this.sendMessage({
+            type: 'hang-up',
+            cameraId: cameraId
+        });
     }
     
     sendMessage(message) {
@@ -667,44 +737,96 @@ class WebRTCSignalingClient {
         try {
             const stats = await peerConnection.getStats();
             let inboundRtpStats = null;
+            let remoteInboundRtpStats = null;
+            let candidatePairStats = null;
+            let trackStats = null;
             
             stats.forEach(report => {
                 if (report.type === 'inbound-rtp' && report.kind === 'video') {
                     inboundRtpStats = report;
+                } else if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
+                    remoteInboundRtpStats = report;
+                } else if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                    candidatePairStats = report;
+                } else if (report.type === 'track' && report.kind === 'video') {
+                    trackStats = report;
                 }
             });
             
             if (inboundRtpStats) {
+                // Get video tracks from the stream element
+                const streamElement = this.streamElements.get(cameraId);
+                let videoTracks = 1;
+                if (streamElement) {
+                    const video = streamElement.querySelector('.stream-video');
+                    if (video && video.srcObject) {
+                        videoTracks = video.srcObject.getVideoTracks().length;
+                    }
+                }
+                
                 const currentStats = {
                     bytesReceived: inboundRtpStats.bytesReceived || 0,
                     packetsReceived: inboundRtpStats.packetsReceived || 0,
+                    packetsLost: inboundRtpStats.packetsLost || 0,
                     framesReceived: inboundRtpStats.framesReceived || 0,
+                    framesDropped: inboundRtpStats.framesDropped || 0,
                     frameRate: inboundRtpStats.framesPerSecond || 0,
+                    jitter: inboundRtpStats.jitter || 0,
+                    rtt: candidatePairStats ? candidatePairStats.currentRoundTripTime : 0,
+                    videoTracks: videoTracks,
                     bandwidth: 0,
+                    packetLossRate: 0,
                     timestamp: Date.now()
                 };
                 
-                // Calculate bandwidth
-                const previousStats = this.streamStats.get(cameraId);
+                // Add remote stats if available
+                if (remoteInboundRtpStats) {
+                    currentStats.remotePacketsLost = remoteInboundRtpStats.packetsLost || 0;
+                    currentStats.remoteJitter = remoteInboundRtpStats.jitter || 0;
+                    currentStats.remoteRtt = remoteInboundRtpStats.roundTripTime || 0;
+                }
+                
+                // Add track stats if available
+                if (trackStats) {
+                    currentStats.trackFrameWidth = trackStats.frameWidth || 0;
+                    currentStats.trackFrameHeight = trackStats.frameHeight || 0;
+                }
+                
+                // Calculate derived metrics
+                const previousStats = this.previousStats.get(cameraId);
                 if (previousStats) {
                     const timeDiff = (currentStats.timestamp - previousStats.timestamp) / 1000;
                     const bytesDiff = currentStats.bytesReceived - previousStats.bytesReceived;
+                    const packetsSent = currentStats.packetsReceived - previousStats.packetsReceived;
+                    const packetsLostDiff = currentStats.packetsLost - previousStats.packetsLost;
+                    
+                    // Calculate bandwidth
                     currentStats.bandwidth = timeDiff > 0 ? Math.round((bytesDiff * 8) / timeDiff / 1000) : 0;
+                    
+                    // Calculate packet loss rate
+                    if (packetsSent > 0) {
+                        currentStats.packetLossRate = Math.round((packetsLostDiff / (packetsSent + packetsLostDiff)) * 100 * 100) / 100;
+                    }
                 }
                 
                 this.streamStats.set(cameraId, currentStats);
+                this.previousStats.set(cameraId, currentStats);
+                
+                // Update floating stats panel
+                this.updateFloatingStats();
                 
                 // Log detailed stats every 5 seconds
                 if (Date.now() % 5000 < 1000) {
-                    this.log(`Statistics for camera ${cameraId}`, 'info', {
+                    this.log(`Individual stream statistics for camera ${cameraId}`, 'info', {
                         cameraId,
+                        streamId: this.cameras.get(cameraId)?.streamId,
                         ...currentStats,
                         timestamp: new Date().toISOString()
                     });
                 }
             }
         } catch (error) {
-            this.log(`Error collecting statistics for camera ${cameraId}`, 'error', {
+            this.log(`Error collecting stream statistics for camera ${cameraId}`, 'error', {
                 cameraId,
                 error: error.message,
                 timestamp: new Date().toISOString()
@@ -770,9 +892,19 @@ class WebRTCSignalingClient {
         }
     }
     
-    handleDisconnection() {
+    handleGlobalDisconnection() {
+        this.log('Handling global WebSocket disconnection - cleaning up all cameras', 'warning', {
+            totalCameras: this.cameras.size,
+            activeStreams: this.activeStreams.size,
+            timestamp: new Date().toISOString()
+        });
+        
         // Clean up all connections
         for (const [cameraId, peerConnection] of this.peerConnections) {
+            this.log(`Closing peer connection for camera ${cameraId}`, 'info', {
+                cameraId,
+                timestamp: new Date().toISOString()
+            });
             peerConnection.close();
         }
         this.peerConnections.clear();
@@ -787,6 +919,7 @@ class WebRTCSignalingClient {
         }
         this.statsIntervals.clear();
         this.streamStats.clear();
+        this.previousStats.clear();
         
         // Reset camera states
         for (const [cameraId, camera] of this.cameras) {
@@ -798,6 +931,7 @@ class WebRTCSignalingClient {
         this.updateCameraList();
         this.updateGlobalStats();
         this.updateStreamsGrid();
+        this.updateFloatingStats();
     }
     
     log(message, type = 'info', data = null) {
@@ -819,7 +953,7 @@ class WebRTCSignalingClient {
         if (data) {
             const dataSpan = document.createElement('div');
             dataSpan.className = 'log-data';
-            dataSpan.textContent = JSON.stringify(data, null, 2);
+            dataSpan.textContent = this.formatLogData(data);
             logEntry.appendChild(dataSpan);
         }
         
@@ -830,6 +964,285 @@ class WebRTCSignalingClient {
         while (this.logContainer.children.length > 100) {
             this.logContainer.removeChild(this.logContainer.firstChild);
         }
+    }
+    
+    formatLogData(data) {
+        if (!data || typeof data !== 'object') {
+            return String(data);
+        }
+        
+        const parts = [];
+        for (const [key, value] of Object.entries(data)) {
+            if (key === 'timestamp') continue; // Skip timestamp as it's redundant
+            
+            let formattedValue = value;
+            
+            // Format specific types for better readability
+            if (Array.isArray(value)) {
+                formattedValue = `[${value.length} items]`;
+            } else if (typeof value === 'object' && value !== null) {
+                if (value.urls) {
+                    formattedValue = `ICE:${value.urls}`;
+                } else if (Object.keys(value).length > 3) {
+                    formattedValue = `{${Object.keys(value).length} props}`;
+                } else {
+                    formattedValue = JSON.stringify(value);
+                }
+            } else if (typeof value === 'string' && value.length > 50) {
+                formattedValue = `${value.substring(0, 50)}...`;
+            } else if (typeof value === 'number' && value > 999) {
+                formattedValue = value.toLocaleString();
+            }
+            
+            parts.push(`${key}: ${formattedValue}`);
+        }
+        
+        return parts.join(' | ');
+    }
+
+    initializeFloatingStats() {
+        // Initially collapsed on mobile
+        if (window.innerWidth <= 768) {
+            const floatingStats = document.getElementById('floatingStats');
+            floatingStats.classList.add('collapsed');
+        }
+        
+        this.updateFloatingStats();
+    }
+
+    updateFloatingStats() {
+        if (!this.floatingStatsContent) return;
+        
+        // Clear existing content
+        this.floatingStatsContent.innerHTML = '';
+        
+        if (this.activeStreams.size === 0) {
+            this.floatingStatsContent.innerHTML = '<div class="floating-stats-no-data">No active video streams</div>';
+            return;
+        }
+        
+        // Create stats for each active stream
+        this.activeStreams.forEach(cameraId => {
+            const stats = this.streamStats.get(cameraId);
+            const camera = this.cameras.get(cameraId);
+            if (!stats || !camera) return;
+            
+            const streamDiv = document.createElement('div');
+            streamDiv.className = 'floating-stats-camera';
+            
+            // Stream header with stream ID
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'floating-stats-camera-title';
+            
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'floating-stats-camera-status';
+            
+            const titleContainer = document.createElement('div');
+            titleContainer.innerHTML = `
+                <div style="font-size: 14px; font-weight: bold;">Video Stream</div>
+                <div style="font-size: 11px; color: #6c757d; margin-top: 2px;">
+                    Camera: ${cameraId} | Stream: ${camera.streamId ? camera.streamId.substring(0, 8) + '...' : 'N/A'}
+                </div>
+            `;
+            
+            headerDiv.appendChild(statusDiv);
+            headerDiv.appendChild(titleContainer);
+            streamDiv.appendChild(headerDiv);
+            
+            // Stream Info section
+            const infoSection = document.createElement('div');
+            infoSection.className = 'floating-stats-section';
+            
+            const infoTitle = document.createElement('div');
+            infoTitle.className = 'floating-stats-section-title';
+            infoTitle.textContent = 'Stream Information';
+            infoSection.appendChild(infoTitle);
+            
+            // Stream ID (full)
+            const streamIdDiv = document.createElement('div');
+            streamIdDiv.className = 'floating-stat-item';
+            streamIdDiv.innerHTML = `
+                <span class="floating-stat-label">Stream ID:</span>
+                <span class="floating-stat-value" style="font-size: 10px; word-break: break-all;">${camera.streamId || 'N/A'}</span>
+            `;
+            infoSection.appendChild(streamIdDiv);
+            
+            // Video Tracks
+            const videoTracksDiv = document.createElement('div');
+            videoTracksDiv.className = 'floating-stat-item';
+            videoTracksDiv.innerHTML = `
+                <span class="floating-stat-label">Video Tracks:</span>
+                <span class="floating-stat-value">${stats.videoTracks || 1}</span>
+            `;
+            infoSection.appendChild(videoTracksDiv);
+            
+            // Video Resolution (if available)
+            if (stats.trackFrameWidth && stats.trackFrameHeight) {
+                const resolutionDiv = document.createElement('div');
+                resolutionDiv.className = 'floating-stat-item';
+                resolutionDiv.innerHTML = `
+                    <span class="floating-stat-label">Resolution:</span>
+                    <span class="floating-stat-value">${stats.trackFrameWidth}x${stats.trackFrameHeight}</span>
+                `;
+                infoSection.appendChild(resolutionDiv);
+            }
+            
+            streamDiv.appendChild(infoSection);
+            
+            // Network Quality section
+            const networkSection = document.createElement('div');
+            networkSection.className = 'floating-stats-section';
+            
+            const networkTitle = document.createElement('div');
+            networkTitle.className = 'floating-stats-section-title';
+            networkTitle.textContent = 'Network Quality';
+            networkSection.appendChild(networkTitle);
+            
+            // Packet Loss
+            const packetsLostDiv = document.createElement('div');
+            packetsLostDiv.className = 'floating-stat-item';
+            packetsLostDiv.innerHTML = `
+                <span class="floating-stat-label">Packets Lost:</span>
+                <span class="floating-stat-value ${stats.packetsLost > 0 ? 'warning' : 'good'}">${stats.packetsLost}</span>
+            `;
+            networkSection.appendChild(packetsLostDiv);
+            
+            // Latency (RTT)
+            const latencyDiv = document.createElement('div');
+            latencyDiv.className = 'floating-stat-item';
+            latencyDiv.innerHTML = `
+                <span class="floating-stat-label">Latency (RTT):</span>
+                <span class="floating-stat-value ${this.getLatencyClass(stats.rtt)}">${this.formatLatency(stats.rtt)}</span>
+            `;
+            networkSection.appendChild(latencyDiv);
+            
+            // Jitter
+            const jitterDiv = document.createElement('div');
+            jitterDiv.className = 'floating-stat-item';
+            jitterDiv.innerHTML = `
+                <span class="floating-stat-label">Jitter:</span>
+                <span class="floating-stat-value ${this.getJitterClass(stats.jitter)}">${this.formatJitter(stats.jitter)}</span>
+            `;
+            networkSection.appendChild(jitterDiv);
+            
+            streamDiv.appendChild(networkSection);
+            
+            // Stream Quality section
+            const streamSection = document.createElement('div');
+            streamSection.className = 'floating-stats-section';
+            
+            const streamTitle = document.createElement('div');
+            streamTitle.className = 'floating-stats-section-title';
+            streamTitle.textContent = 'Stream Quality';
+            streamSection.appendChild(streamTitle);
+            
+            // Bandwidth
+            const bandwidthDiv = document.createElement('div');
+            bandwidthDiv.className = 'floating-stat-item';
+            bandwidthDiv.innerHTML = `
+                <span class="floating-stat-label">Bandwidth:</span>
+                <span class="floating-stat-value">${stats.bandwidth} kbps</span>
+            `;
+            streamSection.appendChild(bandwidthDiv);
+            
+            // Frame Rate
+            const frameRateDiv = document.createElement('div');
+            frameRateDiv.className = 'floating-stat-item';
+            frameRateDiv.innerHTML = `
+                <span class="floating-stat-label">Frame Rate:</span>
+                <span class="floating-stat-value">${Math.round(stats.frameRate)} fps</span>
+            `;
+            streamSection.appendChild(frameRateDiv);
+            
+            // Frames Received
+            const framesReceivedDiv = document.createElement('div');
+            framesReceivedDiv.className = 'floating-stat-item';
+            framesReceivedDiv.innerHTML = `
+                <span class="floating-stat-label">Frames Received:</span>
+                <span class="floating-stat-value">${stats.framesReceived}</span>
+            `;
+            streamSection.appendChild(framesReceivedDiv);
+            
+            // Frames Dropped
+            const framesDroppedDiv = document.createElement('div');
+            framesDroppedDiv.className = 'floating-stat-item';
+            framesDroppedDiv.innerHTML = `
+                <span class="floating-stat-label">Frames Dropped:</span>
+                <span class="floating-stat-value ${stats.framesDropped > 0 ? 'warning' : 'good'}">${stats.framesDropped}</span>
+            `;
+            streamSection.appendChild(framesDroppedDiv);
+            
+            streamDiv.appendChild(streamSection);
+            
+            // Data Transfer section
+            const dataSection = document.createElement('div');
+            dataSection.className = 'floating-stats-section';
+            
+            const dataTitle = document.createElement('div');
+            dataTitle.className = 'floating-stats-section-title';
+            dataTitle.textContent = 'Data Transfer';
+            dataSection.appendChild(dataTitle);
+            
+            // Bytes Received
+            const bytesReceivedDiv = document.createElement('div');
+            bytesReceivedDiv.className = 'floating-stat-item';
+            bytesReceivedDiv.innerHTML = `
+                <span class="floating-stat-label">Bytes Received:</span>
+                <span class="floating-stat-value">${this.formatBytes(stats.bytesReceived)}</span>
+            `;
+            dataSection.appendChild(bytesReceivedDiv);
+            
+            // Packets Received
+            const packetsReceivedDiv = document.createElement('div');
+            packetsReceivedDiv.className = 'floating-stat-item';
+            packetsReceivedDiv.innerHTML = `
+                <span class="floating-stat-label">Packets Received:</span>
+                <span class="floating-stat-value">${stats.packetsReceived.toLocaleString()}</span>
+            `;
+            dataSection.appendChild(packetsReceivedDiv);
+            
+            streamDiv.appendChild(dataSection);
+            
+            this.floatingStatsContent.appendChild(streamDiv);
+        });
+    }
+    
+    getPacketLossClass(packetLoss) {
+        if (packetLoss === 0) return 'good';
+        if (packetLoss <= 1) return 'warning';
+        return 'error';
+    }
+    
+    getLatencyClass(rtt) {
+        if (rtt === 0) return '';
+        if (rtt <= 0.1) return 'good'; // <= 100ms
+        if (rtt <= 0.3) return 'warning'; // <= 300ms
+        return 'error';
+    }
+    
+    getJitterClass(jitter) {
+        if (jitter === 0) return '';
+        if (jitter <= 0.03) return 'good'; // <= 30ms
+        if (jitter <= 0.1) return 'warning'; // <= 100ms
+        return 'error';
+    }
+    
+    formatLatency(rtt) {
+        if (rtt === 0) return 'N/A';
+        return `${Math.round(rtt * 1000)}ms`;
+    }
+    
+    formatJitter(jitter) {
+        if (jitter === 0) return 'N/A';
+        return `${Math.round(jitter * 1000)}ms`;
+    }
+
+    formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 }
 

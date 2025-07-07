@@ -260,7 +260,9 @@
             font-family: monospace;
             font-size: 11px;
             margin-left: 10px;
-            white-space: pre-wrap;
+            margin-top: 2px;
+            word-wrap: break-word;
+            opacity: 0.9;
         }
         
         h1 {
@@ -291,6 +293,156 @@
             color: #6c757d;
             font-style: italic;
             padding: 40px;
+        }
+        
+        /* Floating WebRTC Stats Panel */
+        .floating-stats {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            width: 320px;
+            max-height: 400px;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            z-index: 1000;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .floating-stats.collapsed {
+            height: 50px;
+            overflow: hidden;
+        }
+        
+        .floating-stats-header {
+            background: rgba(0, 123, 255, 0.1);
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(0, 123, 255, 0.2);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        }
+        
+        .floating-stats-title {
+            font-weight: bold;
+            color: #007bff;
+            font-size: 14px;
+        }
+        
+        .floating-stats-toggle {
+            color: #007bff;
+            font-size: 18px;
+            transition: transform 0.3s ease;
+        }
+        
+        .floating-stats.collapsed .floating-stats-toggle {
+            transform: rotate(180deg);
+        }
+        
+        .floating-stats-content {
+            padding: 16px;
+            max-height: 340px;
+            overflow-y: auto;
+        }
+        
+        .floating-stats-section {
+            margin-bottom: 16px;
+        }
+        
+        .floating-stats-section:last-child {
+            margin-bottom: 0;
+        }
+        
+        .floating-stats-section-title {
+            font-weight: bold;
+            color: #495057;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        
+        .floating-stat-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 13px;
+        }
+        
+        .floating-stat-label {
+            color: #6c757d;
+            font-weight: 500;
+        }
+        
+        .floating-stat-value {
+            color: #007bff;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+        }
+        
+        .floating-stat-value.good {
+            color: #28a745;
+        }
+        
+        .floating-stat-value.warning {
+            color: #ffc107;
+        }
+        
+        .floating-stat-value.error {
+            color: #dc3545;
+        }
+        
+        .floating-stats-camera {
+            background: rgba(248, 249, 250, 0.8);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-left: 4px solid #007bff;
+        }
+        
+        .floating-stats-camera-title {
+            font-weight: bold;
+            color: #343a40;
+            font-size: 14px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .floating-stats-camera-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+        
+        .floating-stats-camera-status.disconnected {
+            background: #dc3545;
+        }
+        
+        .floating-stats-no-data {
+            text-align: center;
+            color: #6c757d;
+            font-style: italic;
+            padding: 20px;
+            font-size: 13px;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 768px) {
+            .floating-stats {
+                width: 280px;
+                bottom: 10px;
+                left: 10px;
+            }
         }
     </style>
 </head>
@@ -367,6 +519,26 @@
             </div>
         </div>
     </div>
+    
+    <!-- Floating WebRTC Stats Panel -->
+    <div class="floating-stats" id="floatingStats">
+        <div class="floating-stats-header" onclick="toggleFloatingStats()">
+            <div class="floating-stats-title">Stream Statistics</div>
+            <div class="floating-stats-toggle">▼</div>
+        </div>
+        <div class="floating-stats-content" id="floatingStatsContent">
+            <div class="floating-stats-no-data">
+                No active video streams
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function toggleFloatingStats() {
+            const floatingStats = document.getElementById('floatingStats');
+            floatingStats.classList.toggle('collapsed');
+        }
+    </script>
     
     <script src="client.js"></script>
 </body>
