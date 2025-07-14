@@ -1016,10 +1016,16 @@ class WebRTCSignalingClient {
         // Clear existing content
         this.floatingStatsContent.innerHTML = '';
         
+        const floatingStats = document.getElementById('floatingStats');
+        
         if (this.activeStreams.size === 0) {
             this.floatingStatsContent.innerHTML = '<div class="floating-stats-no-data">No active video streams</div>';
+            floatingStats.classList.remove('has-data');
             return;
         }
+        
+        // Add has-data class to make panel taller
+        floatingStats.classList.add('has-data');
         
         // Create stats for each active stream
         this.activeStreams.forEach(cameraId => {
@@ -1099,6 +1105,15 @@ class WebRTCSignalingClient {
             networkSection.appendChild(networkTitle);
             
             // Packet Loss
+            const packetLossDiv = document.createElement('div');
+            packetLossDiv.className = 'floating-stat-item';
+            packetLossDiv.innerHTML = `
+                <span class="floating-stat-label">Packet Loss:</span>
+                <span class="floating-stat-value ${this.getPacketLossClass(stats.packetLossRate)}">${stats.packetLossRate}%</span>
+            `;
+            networkSection.appendChild(packetLossDiv);
+            
+            // Packets Lost (absolute count)
             const packetsLostDiv = document.createElement('div');
             packetsLostDiv.className = 'floating-stat-item';
             packetsLostDiv.innerHTML = `

@@ -300,8 +300,10 @@
             position: fixed;
             bottom: 20px;
             left: 20px;
-            width: 320px;
-            max-height: 400px;
+            width: 500px;
+            min-height: 50px;
+            min-width: 300px;
+            max-height: 80vh;
             background: rgba(255, 255, 255, 0.95);
             border-radius: 12px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -310,18 +312,27 @@
             z-index: 1000;
             overflow: hidden;
             transition: all 0.3s ease;
+            cursor: move;
+            user-select: none;
+            resize: both;
         }
         
         .floating-stats.collapsed {
             height: 50px;
             overflow: hidden;
+            resize: none;
+        }
+        
+        .floating-stats.has-data {
+            height: auto;
+            max-height: 80vh;
         }
         
         .floating-stats-header {
             background: rgba(0, 123, 255, 0.1);
             padding: 12px 16px;
             border-bottom: 1px solid rgba(0, 123, 255, 0.2);
-            cursor: pointer;
+            cursor: move;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -334,24 +345,76 @@
             font-size: 14px;
         }
         
+        .floating-stats-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
         .floating-stats-toggle {
             color: #007bff;
             font-size: 18px;
             transition: transform 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .floating-stats-resize {
+            color: #007bff;
+            font-size: 16px;
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 3px;
+            transition: background-color 0.2s ease;
+        }
+        
+        .floating-stats-resize:hover {
+            background-color: rgba(0, 123, 255, 0.1);
         }
         
         .floating-stats.collapsed .floating-stats-toggle {
             transform: rotate(180deg);
         }
         
+        .floating-stats.expanded {
+            width: 650px;
+            max-height: 85vh;
+        }
+        
         .floating-stats-content {
-            padding: 16px;
-            max-height: 340px;
+            padding: 20px;
+            max-height: calc(80vh - 60px);
             overflow-y: auto;
         }
         
+        .floating-stats.expanded .floating-stats-content {
+            max-height: calc(85vh - 60px);
+        }
+        
+        /* Resize handle styling */
+        .floating-stats::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 15px;
+            height: 15px;
+            background: linear-gradient(-45deg, transparent 30%, rgba(0, 123, 255, 0.3) 30%, rgba(0, 123, 255, 0.3) 50%, transparent 50%);
+            cursor: se-resize;
+            border-radius: 0 0 12px 0;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+        
+        .floating-stats:hover::after {
+            opacity: 1;
+        }
+        
+        .floating-stats.collapsed::after {
+            display: none;
+        }
+        
         .floating-stats-section {
-            margin-bottom: 16px;
+            margin-bottom: 20px;
         }
         
         .floating-stats-section:last-child {
@@ -361,10 +424,10 @@
         .floating-stats-section-title {
             font-weight: bold;
             color: #495057;
-            font-size: 12px;
+            font-size: 13px;
             text-transform: uppercase;
-            margin-bottom: 8px;
-            padding-bottom: 4px;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
             border-bottom: 1px solid #e9ecef;
         }
         
@@ -372,8 +435,8 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 4px 0;
-            font-size: 13px;
+            padding: 6px 0;
+            font-size: 14px;
         }
         
         .floating-stat-label {
@@ -401,25 +464,25 @@
         
         .floating-stats-camera {
             background: rgba(248, 249, 250, 0.8);
-            border-radius: 8px;
-            padding: 12px;
-            margin-bottom: 12px;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 16px;
             border-left: 4px solid #007bff;
         }
         
         .floating-stats-camera-title {
             font-weight: bold;
             color: #343a40;
-            font-size: 14px;
-            margin-bottom: 8px;
+            font-size: 15px;
+            margin-bottom: 12px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
         
         .floating-stats-camera-status {
-            width: 8px;
-            height: 8px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
             background: #28a745;
         }
@@ -432,16 +495,41 @@
             text-align: center;
             color: #6c757d;
             font-style: italic;
-            padding: 20px;
-            font-size: 13px;
+            padding: 30px;
+            font-size: 14px;
         }
         
         /* Responsive adjustments */
         @media (max-width: 768px) {
             .floating-stats {
-                width: 280px;
+                width: 90vw;
+                max-height: 70vh;
                 bottom: 10px;
-                left: 10px;
+                left: 5vw;
+                resize: none; /* Disable resize on mobile */
+            }
+            
+            .floating-stats-content {
+                max-height: calc(70vh - 60px);
+                padding: 16px;
+            }
+            
+            .floating-stats.expanded {
+                width: 95vw;
+                max-height: 75vh;
+                left: 2.5vw;
+            }
+            
+            .floating-stats.expanded .floating-stats-content {
+                max-height: calc(75vh - 60px);
+            }
+            
+            .floating-stats.has-data {
+                max-height: 70vh;
+            }
+            
+            .floating-stats::after {
+                display: none; /* Hide resize handle on mobile */
             }
         }
     </style>
@@ -473,7 +561,7 @@
             </div>
             
             <div class="stats-section">
-                <h2>WebRTC Statistics</h2>
+                <h2>Average WebRTC Statistics</h2>
                 <div id="statsContainer">
                     <div class="stat-item">
                         <span class="stat-label">Active Streams:</span>
@@ -482,10 +570,6 @@
                     <div class="stat-item">
                         <span class="stat-label">Total Cameras:</span>
                         <span class="stat-value" id="totalCameras">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Connection State:</span>
-                        <span class="stat-value" id="connectionState">disconnected</span>
                     </div>
                     <div class="stat-item">
                         <span class="stat-label">ICE Connection State:</span>
@@ -524,7 +608,10 @@
     <div class="floating-stats" id="floatingStats">
         <div class="floating-stats-header" onclick="toggleFloatingStats()">
             <div class="floating-stats-title">Stream Statistics</div>
-            <div class="floating-stats-toggle">▼</div>
+            <div class="floating-stats-controls">
+                <div class="floating-stats-resize" onclick="toggleStatsSize(event)" title="Toggle large view">⤢</div>
+                <div class="floating-stats-toggle">▼</div>
+            </div>
         </div>
         <div class="floating-stats-content" id="floatingStatsContent">
             <div class="floating-stats-no-data">
@@ -534,10 +621,158 @@
     </div>
     
     <script>
+        let isDragging = false;
+        let isResizing = false;
+        let dragOffset = { x: 0, y: 0 };
+        
         function toggleFloatingStats() {
             const floatingStats = document.getElementById('floatingStats');
             floatingStats.classList.toggle('collapsed');
         }
+        
+        function toggleStatsSize(event) {
+            event.stopPropagation(); // Prevent triggering the collapse
+            const floatingStats = document.getElementById('floatingStats');
+            floatingStats.classList.toggle('expanded');
+            
+            const resizeButton = event.target;
+            if (floatingStats.classList.contains('expanded')) {
+                resizeButton.textContent = '⤢';
+                resizeButton.title = 'Toggle normal view';
+            } else {
+                resizeButton.textContent = '⤢';
+                resizeButton.title = 'Toggle large view';
+            }
+        }
+        
+        // Drag functionality
+        function initDrag() {
+            const floatingStats = document.getElementById('floatingStats');
+            const header = floatingStats.querySelector('.floating-stats-header');
+            
+            header.addEventListener('mousedown', startDrag);
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('mouseup', stopDrag);
+            
+            // Touch support for mobile
+            header.addEventListener('touchstart', startDragTouch);
+            document.addEventListener('touchmove', dragTouch);
+            document.addEventListener('touchend', stopDrag);
+            
+            // Resize functionality
+            floatingStats.addEventListener('mousedown', handleResizeStart);
+            document.addEventListener('mousemove', handleResize);
+            document.addEventListener('mouseup', handleResizeEnd);
+        }
+        
+        function startDrag(e) {
+            if (isResizing) return;
+            e.preventDefault();
+            isDragging = true;
+            const floatingStats = document.getElementById('floatingStats');
+            const rect = floatingStats.getBoundingClientRect();
+            dragOffset.x = e.clientX - rect.left;
+            dragOffset.y = e.clientY - rect.top;
+            floatingStats.style.transition = 'none';
+        }
+        
+        function startDragTouch(e) {
+            if (isResizing) return;
+            e.preventDefault();
+            isDragging = true;
+            const floatingStats = document.getElementById('floatingStats');
+            const rect = floatingStats.getBoundingClientRect();
+            const touch = e.touches[0];
+            dragOffset.x = touch.clientX - rect.left;
+            dragOffset.y = touch.clientY - rect.top;
+            floatingStats.style.transition = 'none';
+        }
+        
+        function drag(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            const floatingStats = document.getElementById('floatingStats');
+            const x = e.clientX - dragOffset.x;
+            const y = e.clientY - dragOffset.y;
+            
+            // Keep panel within viewport bounds
+            const maxX = window.innerWidth - floatingStats.offsetWidth;
+            const maxY = window.innerHeight - floatingStats.offsetHeight;
+            
+            floatingStats.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
+            floatingStats.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+            floatingStats.style.bottom = 'auto';
+        }
+        
+        function dragTouch(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            const floatingStats = document.getElementById('floatingStats');
+            const touch = e.touches[0];
+            const x = touch.clientX - dragOffset.x;
+            const y = touch.clientY - dragOffset.y;
+            
+            // Keep panel within viewport bounds
+            const maxX = window.innerWidth - floatingStats.offsetWidth;
+            const maxY = window.innerHeight - floatingStats.offsetHeight;
+            
+            floatingStats.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
+            floatingStats.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+            floatingStats.style.bottom = 'auto';
+        }
+        
+        function stopDrag() {
+            if (!isDragging) return;
+            isDragging = false;
+            const floatingStats = document.getElementById('floatingStats');
+            floatingStats.style.transition = 'all 0.3s ease';
+        }
+        
+        // Resize functionality
+        function handleResizeStart(e) {
+            const rect = e.target.getBoundingClientRect();
+            const isResizeHandle = e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20;
+            
+            if (isResizeHandle && !isDragging) {
+                e.preventDefault();
+                isResizing = true;
+                const floatingStats = document.getElementById('floatingStats');
+                floatingStats.style.transition = 'none';
+            }
+        }
+        
+        function handleResize(e) {
+            if (!isResizing) return;
+            e.preventDefault();
+            
+            const floatingStats = document.getElementById('floatingStats');
+            const rect = floatingStats.getBoundingClientRect();
+            
+            const newWidth = e.clientX - rect.left;
+            const newHeight = e.clientY - rect.top;
+            
+            // Apply minimum and maximum constraints
+            const minWidth = 300;
+            const maxWidth = window.innerWidth - rect.left;
+            const minHeight = 200;
+            const maxHeight = window.innerHeight - rect.top;
+            
+            const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
+            const constrainedHeight = Math.max(minHeight, Math.min(newHeight, maxHeight));
+            
+            floatingStats.style.width = constrainedWidth + 'px';
+            floatingStats.style.height = constrainedHeight + 'px';
+        }
+        
+        function handleResizeEnd() {
+            if (!isResizing) return;
+            isResizing = false;
+            const floatingStats = document.getElementById('floatingStats');
+            floatingStats.style.transition = 'all 0.3s ease';
+        }
+        
+        // Initialize drag when page loads
+        document.addEventListener('DOMContentLoaded', initDrag);
     </script>
     
     <script src="client.js"></script>
