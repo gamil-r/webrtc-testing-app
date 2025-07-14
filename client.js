@@ -27,14 +27,15 @@ class WebRTCSignalingClient {
     }
     
     initializeWebSocket() {
-        this.socket = new WebSocket('ws://localhost:8080');
+        this.socket = new WebSocket('wss://d7f131a4e1eb.ngrok-free.app');
         
         this.socket.onopen = () => {
             this.log('WebSocket connection established', 'success', {
-                url: 'ws://localhost:8080',
+                url: 'wss://d7f131a4e1eb.ngrok-free.app',
                 readyState: this.socket.readyState,
                 timestamp: new Date().toISOString()
             });
+
             this.updateConnectionStatus(true);
             
             // Identify as web client
@@ -94,7 +95,78 @@ class WebRTCSignalingClient {
         
         const peerConnection = new RTCPeerConnection(configuration);
         
-        peerConnection.addTransceiver('video', { direction: 'recvonly' });
+        // Add video transceiver with H.265 codec preference
+        const transceiver = peerConnection.addTransceiver('video', { direction: 'recvonly' });
+        
+        // Set codec preferences to prioritize H.265
+        if (transceiver && transceiver.sender && transceiver.sender.getCapabilities) {
+            const capabilities = transceiver.sender.getCapabilities();
+            if (capabilities && capabilities.codecs) {
+                this.log(`Available codecs for camera ${cameraId}`, 'info', {
+                    cameraId,
+                    totalCodecs: capabilities.codecs.length,
+                    allCodecs: capabilities.codecs.map(c => ({
+                        mimeType: c.mimeType,
+                        clockRate: c.clockRate,
+                        channels: c.channels,
+                        sdpFmtpLine: c.sdpFmtpLine
+                    })),
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Filter and reorder codecs to prioritize H.265
+                const h265Codecs = capabilities.codecs.filter(codec => 
+                    codec.mimeType.toLowerCase().includes('h265') || 
+                    codec.mimeType.toLowerCase().includes('hevc')
+                );
+                const otherCodecs = capabilities.codecs.filter(codec => 
+                    !codec.mimeType.toLowerCase().includes('h265') && 
+                    !codec.mimeType.toLowerCase().includes('hevc')
+                );
+                
+                // Put H.265 codecs first
+                const preferredCodecs = [...h265Codecs, ...otherCodecs];
+                
+                this.log(`H.265 codec preference setup for camera ${cameraId}`, 'info', {
+                    cameraId,
+                    totalCodecs: capabilities.codecs.length,
+                    h265CodecsFound: h265Codecs.length,
+                    h265CodecDetails: h265Codecs.map(c => ({
+                        mimeType: c.mimeType,
+                        clockRate: c.clockRate,
+                        sdpFmtpLine: c.sdpFmtpLine
+                    })),
+                    otherCodecsCount: otherCodecs.length,
+                    preferredCodecOrder: preferredCodecs.map(c => c.mimeType),
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Set the codec preferences
+                transceiver.setCodecPreferences(preferredCodecs);
+                
+                this.log(`Codec preferences set for camera ${cameraId}`, 'success', {
+                    cameraId,
+                    h265Prioritized: h265Codecs.length > 0,
+                    totalPreferredCodecs: preferredCodecs.length,
+                    timestamp: new Date().toISOString()
+                });
+            } else {
+                this.log(`No codec capabilities available for camera ${cameraId}`, 'warning', {
+                    cameraId,
+                    hasCapabilities: !!capabilities,
+                    hasCodecs: capabilities ? !!capabilities.codecs : false,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        } else {
+            this.log(`Cannot set codec preferences for camera ${cameraId} - API not available`, 'warning', {
+                cameraId,
+                hasTransceiver: !!transceiver,
+                hasSender: transceiver ? !!transceiver.sender : false,
+                hasGetCapabilities: transceiver && transceiver.sender ? !!transceiver.sender.getCapabilities : false,
+                timestamp: new Date().toISOString()
+            });
+        }
         
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
@@ -268,10 +340,24 @@ class WebRTCSignalingClient {
     }
     
     handleOffer(cameraId, offer) {
+        // Log offer details and check for H.265 codecs in received SDP
+        const sdpLines = offer.sdp.split('\n');
+        const h265Lines = sdpLines.filter(line => 
+            line.toLowerCase().includes('h265') || 
+            line.toLowerCase().includes('hevc')
+        );
+        const videoCodecLines = sdpLines.filter(line => 
+            line.startsWith('a=rtpmap:') && line.includes('H265') || 
+            line.startsWith('a=rtpmap:') && line.includes('HEVC')
+        );
+        
         this.log(`Offer received from camera ${cameraId}`, 'info', {
             cameraId,
             sdpType: offer.type,
             sdpLength: offer.sdp.length,
+            h265LinesFound: h265Lines.length,
+            h265Lines: h265Lines,
+            videoCodecLines: videoCodecLines,
             timestamp: new Date().toISOString()
         });
         
@@ -530,7 +616,7 @@ class WebRTCSignalingClient {
         }
     }
     
-    callCamera(cameraId) {
+    requestCall(cameraId) {
         const camera = this.cameras.get(cameraId);
         if (!camera) return;
         
@@ -543,8 +629,8 @@ class WebRTCSignalingClient {
             
             this.hangUpCamera(cameraId);
         } else {
-            // Start call
-            this.log(`Initiating call to camera ${cameraId}`, 'info', {
+            // Send call request and wait for SDP offer
+            this.log(`Sending call request to camera ${cameraId}`, 'info', {
                 cameraId,
                 timestamp: new Date().toISOString()
             });
@@ -557,6 +643,83 @@ class WebRTCSignalingClient {
                 type: 'call-request',
                 cameraId: cameraId
             });
+        }
+    }
+    
+    async callCamera(cameraId) {
+        const camera = this.cameras.get(cameraId);
+        if (!camera) return;
+        
+        if (camera.streaming) {
+            // Hang up - manual disconnect
+            this.log(`Hanging up call to camera ${cameraId}`, 'info', {
+                cameraId,
+                timestamp: new Date().toISOString()
+            });
+            
+            this.hangUpCamera(cameraId);
+        } else {
+            // Create and send SDP offer directly
+            this.log(`Creating direct offer for camera ${cameraId}`, 'info', {
+                cameraId,
+                timestamp: new Date().toISOString()
+            });
+            
+            try {
+                // Set up peer connection if not already exists
+                if (!this.peerConnections.has(cameraId)) {
+                    this.setupPeerConnection(cameraId);
+                }
+                
+                const peerConnection = this.peerConnections.get(cameraId);
+                
+                // Create offer
+                const offer = await peerConnection.createOffer();
+                
+                // Log offer details and check for H.265 codecs in SDP
+                const sdpLines = offer.sdp.split('\n');
+                const h265Lines = sdpLines.filter(line => 
+                    line.toLowerCase().includes('h265') || 
+                    line.toLowerCase().includes('hevc')
+                );
+                const videoCodecLines = sdpLines.filter(line => 
+                    line.startsWith('a=rtpmap:') && line.includes('H265') || 
+                    line.startsWith('a=rtpmap:') && line.includes('HEVC')
+                );
+                
+                this.log(`Offer created for camera ${cameraId}`, 'info', {
+                    cameraId,
+                    sdpType: offer.type,
+                    sdpLength: offer.sdp.length,
+                    h265LinesFound: h265Lines.length,
+                    h265Lines: h265Lines,
+                    videoCodecLines: videoCodecLines,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Set local description
+                await peerConnection.setLocalDescription(offer);
+                
+                this.log(`Local description set for camera ${cameraId}`, 'success', {
+                    cameraId,
+                    timestamp: new Date().toISOString()
+                });
+                
+                // Send offer to server
+                this.sendMessage({
+                    type: 'offer',
+                    cameraId: cameraId,
+                    offer: offer
+                });
+                
+            } catch (error) {
+                this.log(`Error creating offer for camera ${cameraId}`, 'error', {
+                    cameraId,
+                    error: error.message,
+                    stack: error.stack,
+                    timestamp: new Date().toISOString()
+                });
+            }
         }
     }
     
@@ -673,13 +836,35 @@ class WebRTCSignalingClient {
             cameraInfo.appendChild(statusIndicator);
             cameraInfo.appendChild(cameraIdSpan);
             
-            const callButton = document.createElement('button');
-            callButton.className = camera.streaming ? 'call-button hang-up' : 'call-button';
-            callButton.textContent = camera.streaming ? 'Hang Up' : 'Call';
-            callButton.onclick = () => this.callCamera(cameraId);
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.display = 'flex';
+            buttonContainer.style.gap = '8px';
+            
+            if (camera.streaming) {
+                // Show single Hang Up button when streaming
+                const hangUpButton = document.createElement('button');
+                hangUpButton.className = 'call-button hang-up';
+                hangUpButton.textContent = 'Hang Up';
+                hangUpButton.onclick = () => this.callCamera(cameraId);
+                buttonContainer.appendChild(hangUpButton);
+            } else {
+                // Show both Request Call and Call buttons when not streaming
+                const requestCallButton = document.createElement('button');
+                requestCallButton.className = 'call-button';
+                requestCallButton.textContent = 'Request Call';
+                requestCallButton.onclick = () => this.requestCall(cameraId);
+                
+                const callButton = document.createElement('button');
+                callButton.className = 'call-button';
+                callButton.textContent = 'Call';
+                callButton.onclick = () => this.callCamera(cameraId);
+                
+                buttonContainer.appendChild(requestCallButton);
+                buttonContainer.appendChild(callButton);
+            }
             
             listItem.appendChild(cameraInfo);
-            listItem.appendChild(callButton);
+            listItem.appendChild(buttonContainer);
             this.cameraList.appendChild(listItem);
         }
     }
@@ -781,6 +966,7 @@ class WebRTCSignalingClient {
             let remoteInboundRtpStats = null;
             let candidatePairStats = null;
             let trackStats = null;
+            let codecStats = null;
             
             stats.forEach(report => {
                 if (report.type === 'inbound-rtp' && report.kind === 'video') {
@@ -791,6 +977,8 @@ class WebRTCSignalingClient {
                     candidatePairStats = report;
                 } else if (report.type === 'track' && report.kind === 'video') {
                     trackStats = report;
+                } else if (report.type === 'codec' && report.payloadType) {
+                    codecStats = report;
                 }
             });
             
@@ -817,6 +1005,8 @@ class WebRTCSignalingClient {
                     videoTracks: videoTracks,
                     bandwidth: 0,
                     packetLossRate: 0,
+                    encoder: codecStats ? codecStats.mimeType || 'Unknown' : 'Unknown',
+                    codecId: codecStats ? codecStats.payloadType || 'Unknown' : 'Unknown',
                     timestamp: Date.now()
                 };
                 
@@ -861,6 +1051,8 @@ class WebRTCSignalingClient {
                     this.log(`Individual stream statistics for camera ${cameraId}`, 'info', {
                         cameraId,
                         streamId: this.cameras.get(cameraId)?.streamId,
+                        encoder: currentStats.encoder,
+                        codecId: currentStats.codecId,
                         ...currentStats,
                         timestamp: new Date().toISOString()
                     });
@@ -1135,6 +1327,35 @@ class WebRTCSignalingClient {
             }
             
             streamDiv.appendChild(infoSection);
+            
+            // Codec/Encoder section
+            const codecSection = document.createElement('div');
+            codecSection.className = 'floating-stats-section';
+            
+            const codecTitle = document.createElement('div');
+            codecTitle.className = 'floating-stats-section-title';
+            codecTitle.textContent = 'Codec Information';
+            codecSection.appendChild(codecTitle);
+            
+            // Encoder/Codec Information
+            const encoderDiv = document.createElement('div');
+            encoderDiv.className = 'floating-stat-item';
+            encoderDiv.innerHTML = `
+                <span class="floating-stat-label">Encoder:</span>
+                <span class="floating-stat-value">${stats.encoder}</span>
+            `;
+            codecSection.appendChild(encoderDiv);
+            
+            // Codec ID
+            const codecIdDiv = document.createElement('div');
+            codecIdDiv.className = 'floating-stat-item';
+            codecIdDiv.innerHTML = `
+                <span class="floating-stat-label">Codec ID:</span>
+                <span class="floating-stat-value">${stats.codecId}</span>
+            `;
+            codecSection.appendChild(codecIdDiv);
+            
+            streamDiv.appendChild(codecSection);
             
             // Network Quality section
             const networkSection = document.createElement('div');

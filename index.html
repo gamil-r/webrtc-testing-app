@@ -298,8 +298,8 @@
         /* Floating WebRTC Stats Panel */
         .floating-stats {
             position: fixed;
-            bottom: 20px;
-            left: 20px;
+            bottom: 100px;
+            right: 20px;
             width: 500px;
             min-height: 50px;
             min-width: 300px;
@@ -318,14 +318,28 @@
         }
         
         .floating-stats.collapsed {
-            height: 50px;
+            height: 50px !important;
             overflow: hidden;
             resize: none;
+            opacity: 0.7;
+        }
+        
+        .floating-stats.collapsed:hover {
+            opacity: 1;
+        }
+        
+        .floating-stats.collapsed .floating-stats-content {
+            display: none !important;
         }
         
         .floating-stats.has-data {
             height: auto;
             max-height: 80vh;
+        }
+        
+        .floating-stats.has-data.collapsed {
+            height: 50px !important;
+            max-height: 50px !important;
         }
         
         .floating-stats-header {
@@ -606,7 +620,7 @@
     
     <!-- Floating WebRTC Stats Panel -->
     <div class="floating-stats" id="floatingStats">
-        <div class="floating-stats-header" onclick="toggleFloatingStats()">
+        <div class="floating-stats-header">
             <div class="floating-stats-title">Stream Statistics</div>
             <div class="floating-stats-controls">
                 <div class="floating-stats-resize" onclick="toggleStatsSize(event)" title="Toggle large view">⤢</div>
@@ -627,28 +641,49 @@
         
         function toggleFloatingStats() {
             const floatingStats = document.getElementById('floatingStats');
-            floatingStats.classList.toggle('collapsed');
+            if (floatingStats) {
+                const wasCollapsed = floatingStats.classList.contains('collapsed');
+                floatingStats.classList.toggle('collapsed');
+                const isNowCollapsed = floatingStats.classList.contains('collapsed');
+                
+                console.log('Toggled floating stats:', isNowCollapsed ? 'collapsed' : 'expanded');
+                console.log('Previous state:', wasCollapsed ? 'collapsed' : 'expanded');
+                
+                // Force a reflow to ensure the transition works
+                floatingStats.offsetHeight;
+            } else {
+                console.error('Floating stats element not found');
+            }
         }
         
         function toggleStatsSize(event) {
             event.stopPropagation(); // Prevent triggering the collapse
             const floatingStats = document.getElementById('floatingStats');
-            floatingStats.classList.toggle('expanded');
-            
-            const resizeButton = event.target;
-            if (floatingStats.classList.contains('expanded')) {
-                resizeButton.textContent = '⤢';
-                resizeButton.title = 'Toggle normal view';
-            } else {
-                resizeButton.textContent = '⤢';
-                resizeButton.title = 'Toggle large view';
+            if (floatingStats) {
+                const wasExpanded = floatingStats.classList.contains('expanded');
+                floatingStats.classList.toggle('expanded');
+                const isNowExpanded = floatingStats.classList.contains('expanded');
+                
+                const resizeButton = event.target;
+                if (isNowExpanded) {
+                    resizeButton.textContent = '⤢';
+                    resizeButton.title = 'Toggle normal view';
+                } else {
+                    resizeButton.textContent = '⤢';
+                    resizeButton.title = 'Toggle large view';
+                }
+                
+                console.log('Toggled stats size:', isNowExpanded ? 'expanded' : 'normal');
             }
         }
         
         // Drag functionality
         function initDrag() {
             const floatingStats = document.getElementById('floatingStats');
+            if (!floatingStats) return;
+            
             const header = floatingStats.querySelector('.floating-stats-header');
+            if (!header) return;
             
             header.addEventListener('mousedown', startDrag);
             document.addEventListener('mousemove', drag);
@@ -695,12 +730,13 @@
             const x = e.clientX - dragOffset.x;
             const y = e.clientY - dragOffset.y;
             
-            // Keep panel within viewport bounds
-            const maxX = window.innerWidth - floatingStats.offsetWidth;
-            const maxY = window.innerHeight - floatingStats.offsetHeight;
+            // Keep panel within viewport bounds with some margin
+            const margin = 20;
+            const maxX = window.innerWidth - floatingStats.offsetWidth - margin;
+            const maxY = window.innerHeight - floatingStats.offsetHeight - margin;
             
-            floatingStats.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
-            floatingStats.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+            floatingStats.style.left = Math.max(margin, Math.min(x, maxX)) + 'px';
+            floatingStats.style.top = Math.max(margin, Math.min(y, maxY)) + 'px';
             floatingStats.style.bottom = 'auto';
         }
         
@@ -712,12 +748,13 @@
             const x = touch.clientX - dragOffset.x;
             const y = touch.clientY - dragOffset.y;
             
-            // Keep panel within viewport bounds
-            const maxX = window.innerWidth - floatingStats.offsetWidth;
-            const maxY = window.innerHeight - floatingStats.offsetHeight;
+            // Keep panel within viewport bounds with some margin
+            const margin = 20;
+            const maxX = window.innerWidth - floatingStats.offsetWidth - margin;
+            const maxY = window.innerHeight - floatingStats.offsetHeight - margin;
             
-            floatingStats.style.left = Math.max(0, Math.min(x, maxX)) + 'px';
-            floatingStats.style.top = Math.max(0, Math.min(y, maxY)) + 'px';
+            floatingStats.style.left = Math.max(margin, Math.min(x, maxX)) + 'px';
+            floatingStats.style.top = Math.max(margin, Math.min(y, maxY)) + 'px';
             floatingStats.style.bottom = 'auto';
         }
         
@@ -725,7 +762,9 @@
             if (!isDragging) return;
             isDragging = false;
             const floatingStats = document.getElementById('floatingStats');
-            floatingStats.style.transition = 'all 0.3s ease';
+            if (floatingStats) {
+                floatingStats.style.transition = 'all 0.3s ease';
+            }
         }
         
         // Resize functionality
@@ -737,7 +776,9 @@
                 e.preventDefault();
                 isResizing = true;
                 const floatingStats = document.getElementById('floatingStats');
-                floatingStats.style.transition = 'none';
+                if (floatingStats) {
+                    floatingStats.style.transition = 'none';
+                }
             }
         }
         
@@ -753,9 +794,9 @@
             
             // Apply minimum and maximum constraints
             const minWidth = 300;
-            const maxWidth = window.innerWidth - rect.left;
+            const maxWidth = window.innerWidth - rect.left - 40; // 40px margin
             const minHeight = 200;
-            const maxHeight = window.innerHeight - rect.top;
+            const maxHeight = window.innerHeight - rect.top - 40; // 40px margin
             
             const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
             const constrainedHeight = Math.max(minHeight, Math.min(newHeight, maxHeight));
@@ -768,11 +809,32 @@
             if (!isResizing) return;
             isResizing = false;
             const floatingStats = document.getElementById('floatingStats');
-            floatingStats.style.transition = 'all 0.3s ease';
+            if (floatingStats) {
+                floatingStats.style.transition = 'all 0.3s ease';
+            }
         }
         
         // Initialize drag when page loads
         document.addEventListener('DOMContentLoaded', initDrag);
+        
+        // Add additional click handler for better toggle functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const floatingStats = document.getElementById('floatingStats');
+            if (floatingStats) {
+                const header = floatingStats.querySelector('.floating-stats-header');
+                if (header) {
+                    // Remove existing onclick and add event listener
+                    header.removeAttribute('onclick');
+                    header.addEventListener('click', function(e) {
+                        // Don't toggle if clicking on controls
+                        if (e.target.closest('.floating-stats-controls')) {
+                            return;
+                        }
+                        toggleFloatingStats();
+                    });
+                }
+            }
+        });
     </script>
     
     <script src="client.js"></script>
