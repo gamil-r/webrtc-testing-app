@@ -17,6 +17,9 @@ class WebRTCSignalingClient {
         this.floatingStatsContent = document.getElementById('floatingStatsContent');
         this.previousStats = new Map(); // Map of cameraId -> previous stats for calculations
         
+        // Track manual hang-ups to prevent automatic disconnection handling
+        this.manualHangups = new Set();
+        
         this.initializeWebSocket();
         this.setupGlobalStats();
         this.startGlobalStatsUpdate();
@@ -146,7 +149,7 @@ class WebRTCSignalingClient {
                 this.startStatsCollection(cameraId);
             } else if (state === 'disconnected' || state === 'failed') {
                 // Only handle automatic disconnections, not manual hang-ups
-                if (this.peerConnections.has(cameraId)) {
+                if (this.peerConnections.has(cameraId) && !this.manualHangups.has(cameraId)) {
                     this.log(`Automatic disconnection detected for camera ${cameraId}`, 'warning', {
                         cameraId,
                         connectionState: state,
@@ -195,6 +198,7 @@ class WebRTCSignalingClient {
         this.log(`Message received: ${message.type}`, 'info', {
             messageType: message.type,
             cameraId: message.cameraId || 'N/A',
+            fullMessage: JSON.stringify(message),
             timestamp: new Date().toISOString()
         });
         
@@ -250,6 +254,9 @@ class WebRTCSignalingClient {
             this.log(`Camera disconnected`, 'warning', {
                 cameraId,
                 wasStreaming: this.cameras.get(cameraId).streaming,
+                allCameras: Array.from(this.cameras.keys()),
+                activeStreams: Array.from(this.activeStreams),
+                isManualHangup: this.manualHangups.has(cameraId),
                 timestamp: new Date().toISOString()
             });
             
@@ -394,6 +401,8 @@ class WebRTCSignalingClient {
     handleStreamEnded(cameraId) {
         this.log(`Stream ended for camera ${cameraId}`, 'warning', {
             cameraId,
+            activeStreamsBeforeEnd: Array.from(this.activeStreams),
+            isManualHangup: this.manualHangups.has(cameraId),
             timestamp: new Date().toISOString()
         });
         
@@ -411,15 +420,6 @@ class WebRTCSignalingClient {
             this.peerConnections.delete(cameraId);
         }
         
-        // Remove stream element
-        if (this.streamElements.has(cameraId)) {
-            const element = this.streamElements.get(cameraId);
-            if (element.parentNode) {
-                element.parentNode.remove();
-            }
-            this.streamElements.delete(cameraId);
-        }
-        
         // Stop stats collection
         this.stopStatsCollection(cameraId);
         
@@ -431,6 +431,23 @@ class WebRTCSignalingClient {
         this.updateGlobalStats();
         this.updateStreamsGrid();
         this.updateFloatingStats();
+        
+        // Only remove stream element if it's not a manual hangup (let hangUpCamera handle it)
+        if (!this.manualHangups.has(cameraId)) {
+            if (this.streamElements.has(cameraId)) {
+                const element = this.streamElements.get(cameraId);
+                if (element.parentNode) {
+                    element.parentNode.remove();
+                }
+                this.streamElements.delete(cameraId);
+            }
+        }
+        
+        this.log(`Stream cleanup completed for camera ${cameraId}`, 'info', {
+            cameraId,
+            activeStreamsAfterEnd: Array.from(this.activeStreams),
+            timestamp: new Date().toISOString()
+        });
     }
     
     createOrUpdateStreamElement(cameraId, stream) {
@@ -478,6 +495,12 @@ class WebRTCSignalingClient {
     }
     
     updateStreamsGrid() {
+        this.log(`Updating streams grid`, 'info', {
+            activeStreams: Array.from(this.activeStreams),
+            streamElements: Array.from(this.streamElements.keys()),
+            timestamp: new Date().toISOString()
+        });
+        
         // Clear existing content
         this.streamsGrid.innerHTML = '';
         
@@ -492,6 +515,16 @@ class WebRTCSignalingClient {
                 const streamElement = this.streamElements.get(cameraId);
                 if (streamElement) {
                     this.streamsGrid.appendChild(streamElement);
+                    
+                    this.log(`Added stream element for camera ${cameraId}`, 'info', {
+                        cameraId,
+                        timestamp: new Date().toISOString()
+                    });
+                } else {
+                    this.log(`No stream element found for camera ${cameraId}`, 'warning', {
+                        cameraId,
+                        timestamp: new Date().toISOString()
+                    });
                 }
             }
         }
@@ -533,6 +566,9 @@ class WebRTCSignalingClient {
             timestamp: new Date().toISOString()
         });
         
+        // Mark this as a manual hang-up to prevent automatic disconnection handling
+        this.manualHangups.add(cameraId);
+        
         // Update camera streaming state first
         if (this.cameras.has(cameraId)) {
             this.cameras.get(cameraId).streaming = false;
@@ -554,7 +590,13 @@ class WebRTCSignalingClient {
             this.peerConnections.delete(cameraId);
         }
         
-        // Remove stream element for this camera only
+        // Update UI first (this should only affect this camera)
+        this.updateCameraList();
+        this.updateGlobalStats();
+        this.updateStreamsGrid();
+        this.updateFloatingStats();
+        
+        // Remove stream element after grid update
         if (this.streamElements.has(cameraId)) {
             const element = this.streamElements.get(cameraId);
             if (element.parentNode) {
@@ -563,17 +605,16 @@ class WebRTCSignalingClient {
             this.streamElements.delete(cameraId);
         }
         
-        // Update UI (this should only affect this camera)
-        this.updateCameraList();
-        this.updateGlobalStats();
-        this.updateStreamsGrid();
-        this.updateFloatingStats();
-        
         // Send hang-up message to server
         this.sendMessage({
             type: 'hang-up',
             cameraId: cameraId
         });
+        
+        // Clear the manual hangup flag after a short delay to ensure all events have processed
+        setTimeout(() => {
+            this.manualHangups.delete(cameraId);
+        }, 1000);
     }
     
     sendMessage(message) {
