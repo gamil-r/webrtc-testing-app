@@ -12,8 +12,14 @@ app.use(express.static(path.join(__dirname, '.')));
 // Create HTTP server
 const server = http.createServer(app);
 
-// Create WebSocket server
-const wss = new WebSocket.Server({ server });
+// Create WebSocket server with ping/pong configuration
+const wss = new WebSocket.Server({ 
+    server,
+    // Add ping/pong configuration for keepalive
+    perMessageDeflate: false, // Disable compression for better performance
+    maxPayload: 1024 * 1024, // 1MB max payload
+    skipUTF8Validation: false
+});
 
 // Store connected clients
 const clients = new Map();
@@ -25,6 +31,12 @@ const defaultIceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
 ];
+
+// Connection monitoring
+const connectionHealth = new Map(); // Map of clientId -> lastPingTime
+const PING_INTERVAL = 30000; // 30 seconds
+const PONG_TIMEOUT = 10000; // 10 seconds
+const CONNECTION_TIMEOUT = 60000; // 60 seconds
 
 function log(message) {
     const timestamp = new Date().toISOString();
@@ -72,10 +84,16 @@ wss.on('connection', (ws, req) => {
         id: clientId,
         ws: ws,
         type: null, // 'web' or 'android'
-        ip: req.socket.remoteAddress
+        ip: req.socket.remoteAddress,
+        connectedAt: Date.now(),
+        lastPingTime: Date.now(),
+        lastPongTime: Date.now(),
+        isAlive: true
     };
     
     clients.set(clientId, clientInfo);
+    connectionHealth.set(clientId, Date.now());
+    
     log(`Client connected: ${clientId} from ${clientInfo.ip}`);
 
     // Send initial ICE servers
@@ -84,17 +102,46 @@ wss.on('connection', (ws, req) => {
         iceServers: defaultIceServers
     }));
 
+    // Set up ping/pong mechanism
+    ws.isAlive = true;
+    ws.on('pong', () => {
+        ws.isAlive = true;
+        clientInfo.lastPongTime = Date.now();
+        clientInfo.isAlive = true;
+        connectionHealth.set(clientId, Date.now());
+        log(`Pong received from client ${clientId}`);
+    });
+
     ws.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
+            
+            // Handle ping/pong messages
+            if (message.type === 'ping') {
+                ws.send(JSON.stringify({ type: 'pong', timestamp: message.timestamp }));
+                clientInfo.lastPingTime = Date.now();
+                clientInfo.isAlive = true;
+                connectionHealth.set(clientId, Date.now());
+                log(`Ping received from client ${clientId}, sent pong`);
+                return;
+            }
+            
+            if (message.type === 'pong') {
+                clientInfo.lastPongTime = Date.now();
+                clientInfo.isAlive = true;
+                connectionHealth.set(clientId, Date.now());
+                log(`Pong received from client ${clientId}`);
+                return;
+            }
+            
             handleMessage(clientId, message);
         } catch (error) {
             log(`Error parsing message from ${clientId}: ${error.message}`);
         }
     });
 
-    ws.on('close', () => {
-        log(`Client disconnected: ${clientId}`);
+    ws.on('close', (code, reason) => {
+        log(`Client disconnected: ${clientId} (code: ${code}, reason: ${reason})`);
         
         // Remove cameras registered by this client
         cameras.forEach((camera, cameraId) => {
@@ -119,10 +166,51 @@ wss.on('connection', (ws, req) => {
         });
         
         clients.delete(clientId);
+        connectionHealth.delete(clientId);
     });
 
     ws.on('error', (error) => {
         log(`WebSocket error for client ${clientId}: ${error.message}`);
+    });
+});
+
+// Set up periodic ping/pong to keep connections alive
+const pingInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            log(`Terminating connection - no pong received`);
+            return ws.terminate();
+        }
+        
+        ws.isAlive = false;
+        ws.ping(() => {
+            log(`Ping sent to client`);
+        });
+    });
+}, PING_INTERVAL);
+
+// Monitor connection health
+const healthCheckInterval = setInterval(() => {
+    const now = Date.now();
+    connectionHealth.forEach((lastActivity, clientId) => {
+        const timeSinceLastActivity = now - lastActivity;
+        if (timeSinceLastActivity > CONNECTION_TIMEOUT) {
+            const client = clients.get(clientId);
+            if (client && client.ws.readyState === WebSocket.OPEN) {
+                log(`Client ${clientId} timed out after ${timeSinceLastActivity}ms, terminating connection`);
+                client.ws.terminate();
+            }
+        }
+    });
+}, 10000); // Check every 10 seconds
+
+// Clean up intervals on server shutdown
+process.on('SIGINT', () => {
+    clearInterval(pingInterval);
+    clearInterval(healthCheckInterval);
+    wss.close(() => {
+        log('WebSocket server closed');
+        process.exit(0);
     });
 });
 

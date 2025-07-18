@@ -20,6 +20,16 @@ class WebRTCSignalingClient {
         // Track manual hang-ups to prevent automatic disconnection handling
         this.manualHangups = new Set();
         
+        // Connection management
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 10;
+        this.reconnectDelay = 1000; // Start with 1 second
+        this.maxReconnectDelay = 30000; // Max 30 seconds
+        this.pingInterval = null;
+        this.pongTimeout = null;
+        this.lastPongTime = Date.now();
+        this.connectionTimeout = 60000; // 60 seconds
+        
         this.initializeWebSocket();
         this.setupGlobalStats();
         this.startGlobalStatsUpdate();
@@ -27,16 +37,26 @@ class WebRTCSignalingClient {
     }
     
     initializeWebSocket() {
+        // Close existing connection if any
+        if (this.socket) {
+            this.socket.close();
+        }
+        
         this.socket = new WebSocket('wss://d7f131a4e1eb.ngrok-free.app');
         
         this.socket.onopen = () => {
             this.log('WebSocket connection established', 'success', {
                 url: 'wss://d7f131a4e1eb.ngrok-free.app',
                 readyState: this.socket.readyState,
+                reconnectAttempt: this.reconnectAttempts,
                 timestamp: new Date().toISOString()
             });
 
             this.updateConnectionStatus(true);
+            this.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+            
+            // Start ping/pong mechanism
+            this.startPingPong();
             
             // Identify as web client
             this.sendMessage({
@@ -52,15 +72,24 @@ class WebRTCSignalingClient {
                 wasClean: event.wasClean,
                 activeCameras: this.cameras.size,
                 activeStreams: this.activeStreams.size,
+                reconnectAttempts: this.reconnectAttempts,
                 timestamp: new Date().toISOString()
             });
+            
             this.updateConnectionStatus(false);
+            this.stopPingPong();
             this.handleGlobalDisconnection();
+            
+            // Attempt to reconnect if not a clean close and under max attempts
+            if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.scheduleReconnect();
+            }
         };
         
         this.socket.onerror = (error) => {
             this.log('WebSocket error occurred', 'error', {
                 error: error.message || 'Unknown error',
+                reconnectAttempts: this.reconnectAttempts,
                 timestamp: new Date().toISOString()
             });
         };
@@ -68,6 +97,21 @@ class WebRTCSignalingClient {
         this.socket.onmessage = (event) => {
             try {
                 const message = JSON.parse(event.data);
+                
+                // Handle ping/pong messages
+                if (message.type === 'ping') {
+                    this.sendMessage({ type: 'pong', timestamp: message.timestamp });
+                    this.lastPongTime = Date.now();
+                    this.log('Ping received, sent pong', 'info');
+                    return;
+                }
+                
+                if (message.type === 'pong') {
+                    this.lastPongTime = Date.now();
+                    this.log('Pong received from server', 'info');
+                    return;
+                }
+                
                 this.handleMessage(message);
             } catch (error) {
                 this.log('Failed to parse WebSocket message', 'error', {
@@ -792,9 +836,78 @@ class WebRTCSignalingClient {
             this.log('Cannot send message - WebSocket not connected', 'error', {
                 messageType: message.type,
                 socketState: this.socket ? this.socket.readyState : 'null',
+                reconnectAttempts: this.reconnectAttempts,
                 timestamp: new Date().toISOString()
             });
+            
+            // If we can't send a message and we're not trying to reconnect, schedule a reconnect
+            if (this.reconnectAttempts < this.maxReconnectAttempts && 
+                (!this.socket || this.socket.readyState !== WebSocket.CONNECTING)) {
+                this.scheduleReconnect();
+            }
         }
+    }
+    
+    startPingPong() {
+        // Clear any existing intervals
+        this.stopPingPong();
+        
+        // Send ping every 25 seconds (server pings every 30)
+        this.pingInterval = setInterval(() => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.sendMessage({
+                    type: 'ping',
+                    timestamp: Date.now()
+                });
+                this.log('Ping sent to server', 'info');
+                
+                // Set up pong timeout
+                this.pongTimeout = setTimeout(() => {
+                    const timeSinceLastPong = Date.now() - this.lastPongTime;
+                    if (timeSinceLastPong > this.connectionTimeout) {
+                        this.log('Pong timeout - connection may be stale', 'warning', {
+                            timeSinceLastPong,
+                            connectionTimeout: this.connectionTimeout
+                        });
+                        // Force reconnection
+                        this.socket.close();
+                    }
+                }, 5000); // Wait 5 seconds for pong
+            }
+        }, 25000);
+    }
+    
+    stopPingPong() {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        if (this.pongTimeout) {
+            clearTimeout(this.pongTimeout);
+            this.pongTimeout = null;
+        }
+    }
+    
+    scheduleReconnect() {
+        this.reconnectAttempts++;
+        const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), this.maxReconnectDelay);
+        
+        this.log(`Scheduling reconnection attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`, 'warning', {
+            reconnectAttempts: this.reconnectAttempts,
+            maxReconnectAttempts: this.maxReconnectAttempts,
+            delay,
+            timestamp: new Date().toISOString()
+        });
+        
+        setTimeout(() => {
+            if (this.socket && this.socket.readyState !== WebSocket.OPEN) {
+                this.log(`Attempting reconnection ${this.reconnectAttempts}/${this.maxReconnectAttempts}`, 'info', {
+                    reconnectAttempts: this.reconnectAttempts,
+                    timestamp: new Date().toISOString()
+                });
+                this.initializeWebSocket();
+            }
+        }, delay);
     }
     
     updateConnectionStatus(connected) {
