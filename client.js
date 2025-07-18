@@ -1080,12 +1080,15 @@ class WebRTCSignalingClient {
             let candidatePairStats = null;
             let trackStats = null;
             let codecStats = null;
+            let remoteOutboundRtpStats = null;
             
             stats.forEach(report => {
                 if (report.type === 'inbound-rtp' && report.kind === 'video') {
                     inboundRtpStats = report;
                 } else if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
                     remoteInboundRtpStats = report;
+                } else if (report.type === 'remote-outbound-rtp' && report.kind === 'video') {
+                    remoteOutboundRtpStats = report;
                 } else if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                     candidatePairStats = report;
                 } else if (report.type === 'track' && report.kind === 'video') {
@@ -1120,6 +1123,14 @@ class WebRTCSignalingClient {
                     packetLossRate: 0,
                     encoder: codecStats ? codecStats.mimeType || 'Unknown' : 'Unknown',
                     codecId: codecStats ? codecStats.payloadType || 'Unknown' : 'Unknown',
+                    // Add freeze monitoring
+                    freezeCount: inboundRtpStats.freezeCount || 0,
+                    freezeRate: 0, // Will be calculated below
+                    // Add PLI and NACK monitoring
+                    pliCount: inboundRtpStats.pliCount || 0,
+                    nackCount: inboundRtpStats.nackCount || 0,
+                    pliRate: 0, // Will be calculated below
+                    nackRate: 0, // Will be calculated below
                     timestamp: Date.now()
                 };
                 
@@ -1128,6 +1139,12 @@ class WebRTCSignalingClient {
                     currentStats.remotePacketsLost = remoteInboundRtpStats.packetsLost || 0;
                     currentStats.remoteJitter = remoteInboundRtpStats.jitter || 0;
                     currentStats.remoteRtt = remoteInboundRtpStats.roundTripTime || 0;
+                }
+                
+                // Add remote outbound stats for PLI/NACK sent by remote
+                if (remoteOutboundRtpStats) {
+                    currentStats.remotePliCount = remoteOutboundRtpStats.pliCount || 0;
+                    currentStats.remoteNackCount = remoteOutboundRtpStats.nackCount || 0;
                 }
                 
                 // Add track stats if available
@@ -1151,6 +1168,64 @@ class WebRTCSignalingClient {
                     if (packetsSent > 0) {
                         currentStats.packetLossRate = Math.round((packetsLostDiff / (packetsSent + packetsLostDiff)) * 100 * 100) / 100;
                     }
+                    
+                    // Calculate freeze rate (freezes per minute)
+                    const freezeDiff = currentStats.freezeCount - previousStats.freezeCount;
+                    if (timeDiff > 0) {
+                        currentStats.freezeRate = Math.round((freezeDiff / timeDiff) * 60 * 100) / 100; // freezes per minute
+                    }
+                    
+                    // Calculate PLI rate (PLIs per minute)
+                    const pliDiff = currentStats.pliCount - previousStats.pliCount;
+                    if (timeDiff > 0) {
+                        currentStats.pliRate = Math.round((pliDiff / timeDiff) * 60 * 100) / 100; // PLIs per minute
+                    }
+                    
+                    // Calculate NACK rate (NACKs per minute)
+                    const nackDiff = currentStats.nackCount - previousStats.nackCount;
+                    if (timeDiff > 0) {
+                        currentStats.nackRate = Math.round((nackDiff / timeDiff) * 60 * 100) / 100; // NACKs per minute
+                    }
+                    
+                    // Log freeze events
+                    if (freezeDiff > 0) {
+                        this.log(`Video freeze detected for camera ${cameraId}`, 'warning', {
+                            cameraId,
+                            freezeCount: currentStats.freezeCount,
+                            freezeDiff,
+                            timeSinceLastStats: timeDiff,
+                            freezeRate: currentStats.freezeRate,
+                            frameRate: currentStats.frameRate,
+                            packetLossRate: currentStats.packetLossRate,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                    
+                    // Log PLI events (Picture Loss Indication)
+                    if (pliDiff > 0) {
+                        this.log(`PLI (Picture Loss) detected for camera ${cameraId}`, 'warning', {
+                            cameraId,
+                            pliCount: currentStats.pliCount,
+                            pliDiff,
+                            pliRate: currentStats.pliRate,
+                            packetLossRate: currentStats.packetLossRate,
+                            frameRate: currentStats.frameRate,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                    
+                    // Log NACK events (Negative Acknowledgment)
+                    if (nackDiff > 0) {
+                        this.log(`NACK (Retransmission request) detected for camera ${cameraId}`, 'warning', {
+                            cameraId,
+                            nackCount: currentStats.nackCount,
+                            nackDiff,
+                            nackRate: currentStats.nackRate,
+                            packetLossRate: currentStats.packetLossRate,
+                            rtt: currentStats.rtt,
+                            timestamp: new Date().toISOString()
+                        });
+                    }
                 }
                 
                 this.streamStats.set(cameraId, currentStats);
@@ -1166,6 +1241,12 @@ class WebRTCSignalingClient {
                         streamId: this.cameras.get(cameraId)?.streamId,
                         encoder: currentStats.encoder,
                         codecId: currentStats.codecId,
+                        freezeCount: currentStats.freezeCount,
+                        freezeRate: currentStats.freezeRate,
+                        pliCount: currentStats.pliCount,
+                        pliRate: currentStats.pliRate,
+                        nackCount: currentStats.nackCount,
+                        nackRate: currentStats.nackRate,
                         ...currentStats,
                         timestamp: new Date().toISOString()
                     });
@@ -1562,7 +1643,100 @@ class WebRTCSignalingClient {
             `;
             streamSection.appendChild(framesDroppedDiv);
             
+            // Freeze Count
+            const freezeCountDiv = document.createElement('div');
+            freezeCountDiv.className = 'floating-stat-item';
+            freezeCountDiv.innerHTML = `
+                <span class="floating-stat-label">Freeze Count:</span>
+                <span class="floating-stat-value ${this.getFreezeCountClass(stats.freezeCount)}">${stats.freezeCount}</span>
+            `;
+            streamSection.appendChild(freezeCountDiv);
+            
+            // Freeze Rate
+            const freezeRateDiv = document.createElement('div');
+            freezeRateDiv.className = 'floating-stat-item';
+            freezeRateDiv.innerHTML = `
+                <span class="floating-stat-label">Freeze Rate:</span>
+                <span class="floating-stat-value ${this.getFreezeRateClass(stats.freezeRate)}">${stats.freezeRate} freezes/min</span>
+            `;
+            streamSection.appendChild(freezeRateDiv);
+            
             streamDiv.appendChild(streamSection);
+            
+            // Video Quality Issues section
+            const qualitySection = document.createElement('div');
+            qualitySection.className = 'floating-stats-section';
+            
+            const qualityTitle = document.createElement('div');
+            qualityTitle.className = 'floating-stats-section-title';
+            qualityTitle.textContent = 'Video Quality Issues';
+            qualitySection.appendChild(qualityTitle);
+            
+            // PLI Count
+            const pliCountDiv = document.createElement('div');
+            pliCountDiv.className = 'floating-stat-item';
+            pliCountDiv.innerHTML = `
+                <span class="floating-stat-label">PLI Count:</span>
+                <span class="floating-stat-value ${this.getPliCountClass(stats.pliCount)}">${stats.pliCount}</span>
+            `;
+            qualitySection.appendChild(pliCountDiv);
+            
+            // PLI Rate
+            const pliRateDiv = document.createElement('div');
+            pliRateDiv.className = 'floating-stat-item';
+            pliRateDiv.innerHTML = `
+                <span class="floating-stat-label">PLI Rate:</span>
+                <span class="floating-stat-value ${this.getPliRateClass(stats.pliRate)}">${stats.pliRate} PLIs/min</span>
+            `;
+            qualitySection.appendChild(pliRateDiv);
+            
+            // NACK Count
+            const nackCountDiv = document.createElement('div');
+            nackCountDiv.className = 'floating-stat-item';
+            nackCountDiv.innerHTML = `
+                <span class="floating-stat-label">NACK Count:</span>
+                <span class="floating-stat-value ${this.getNackCountClass(stats.nackCount)}">${stats.nackCount}</span>
+            `;
+            qualitySection.appendChild(nackCountDiv);
+            
+            // NACK Rate
+            const nackRateDiv = document.createElement('div');
+            nackRateDiv.className = 'floating-stat-item';
+            nackRateDiv.innerHTML = `
+                <span class="floating-stat-label">NACK Rate:</span>
+                <span class="floating-stat-value ${this.getNackRateClass(stats.nackRate)}">${stats.nackRate} NACKs/min</span>
+            `;
+            qualitySection.appendChild(nackRateDiv);
+            
+            // Remote PLI/NACK (if available)
+            if (stats.remotePliCount !== undefined || stats.remoteNackCount !== undefined) {
+                const remoteTitle = document.createElement('div');
+                remoteTitle.className = 'floating-stats-section-title';
+                remoteTitle.textContent = 'Remote Quality Issues';
+                qualitySection.appendChild(remoteTitle);
+                
+                if (stats.remotePliCount !== undefined) {
+                    const remotePliDiv = document.createElement('div');
+                    remotePliDiv.className = 'floating-stat-item';
+                    remotePliDiv.innerHTML = `
+                        <span class="floating-stat-label">Remote PLI:</span>
+                        <span class="floating-stat-value">${stats.remotePliCount}</span>
+                    `;
+                    qualitySection.appendChild(remotePliDiv);
+                }
+                
+                if (stats.remoteNackCount !== undefined) {
+                    const remoteNackDiv = document.createElement('div');
+                    remoteNackDiv.className = 'floating-stat-item';
+                    remoteNackDiv.innerHTML = `
+                        <span class="floating-stat-label">Remote NACK:</span>
+                        <span class="floating-stat-value">${stats.remoteNackCount}</span>
+                    `;
+                    qualitySection.appendChild(remoteNackDiv);
+                }
+            }
+            
+            streamDiv.appendChild(qualitySection);
             
             // Data Transfer section
             const dataSection = document.createElement('div');
@@ -1633,6 +1807,42 @@ class WebRTCSignalingClient {
         const sizes = ['B', 'KB', 'MB', 'GB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    getFreezeCountClass(freezeCount) {
+        if (freezeCount === 0) return 'good';
+        if (freezeCount <= 5) return 'warning';
+        return 'error';
+    }
+
+    getFreezeRateClass(freezeRate) {
+        if (freezeRate === 0) return 'good';
+        if (freezeRate <= 1) return 'warning';
+        return 'error';
+    }
+
+    getPliCountClass(pliCount) {
+        if (pliCount === 0) return 'good';
+        if (pliCount <= 5) return 'warning';
+        return 'error';
+    }
+
+    getPliRateClass(pliRate) {
+        if (pliRate === 0) return 'good';
+        if (pliRate <= 1) return 'warning';
+        return 'error';
+    }
+
+    getNackCountClass(nackCount) {
+        if (nackCount === 0) return 'good';
+        if (nackCount <= 5) return 'warning';
+        return 'error';
+    }
+
+    getNackRateClass(nackRate) {
+        if (nackRate === 0) return 'good';
+        if (nackRate <= 1) return 'warning';
+        return 'error';
     }
 }
 

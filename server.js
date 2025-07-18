@@ -205,15 +205,16 @@ const healthCheckInterval = setInterval(() => {
 }, 10000); // Check every 10 seconds
 
 // Clean up intervals on server shutdown
+/*
 process.on('SIGINT', () => {
     clearInterval(pingInterval);
     clearInterval(healthCheckInterval);
     wss.close(() => {
         log('WebSocket server closed');
-        process.exit(0);
+        process.exit(0// 
     });
 });
-
+*/
 function handleMessage(clientId, message) {
     const client = clients.get(clientId);
     if (!client) return;
