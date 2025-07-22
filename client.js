@@ -20,15 +20,15 @@ class WebRTCSignalingClient {
         // Track manual hang-ups to prevent automatic disconnection handling
         this.manualHangups = new Set();
         
-        // Connection management
+        // Connection management - use CONFIG values
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 10;
-        this.reconnectDelay = 1000; // Start with 1 second
-        this.maxReconnectDelay = 30000; // Max 30 seconds
+        this.maxReconnectAttempts = CONFIG.WEBSOCKET.RECONNECT_ATTEMPTS;
+        this.reconnectDelay = CONFIG.WEBSOCKET.RECONNECT_BASE_DELAY;
+        this.maxReconnectDelay = CONFIG.WEBSOCKET.RECONNECT_MAX_DELAY;
         this.pingInterval = null;
         this.pongTimeout = null;
         this.lastPongTime = Date.now();
-        this.connectionTimeout = 60000; // 60 seconds
+        this.connectionTimeout = CONFIG.WEBSOCKET.CONNECTION_TIMEOUT;
         
         this.initializeWebSocket();
         this.setupGlobalStats();
@@ -42,11 +42,13 @@ class WebRTCSignalingClient {
             this.socket.close();
         }
         
-        this.socket = new WebSocket('wss://d7f131a4e1eb.ngrok-free.app');
+        // Use configured WebSocket URL
+        const wsUrl = CONFIG.WEBSOCKET.URL;
+        this.socket = new WebSocket(wsUrl);
         
         this.socket.onopen = () => {
             this.log('WebSocket connection established', 'success', {
-                url: 'wss://d7f131a4e1eb.ngrok-free.app',
+                url: wsUrl,
                 readyState: this.socket.readyState,
                 reconnectAttempt: this.reconnectAttempts,
                 timestamp: new Date().toISOString()
@@ -587,6 +589,7 @@ class WebRTCSignalingClient {
             // Create new stream container
             streamContainer = document.createElement('div');
             streamContainer.className = 'stream-container';
+            streamContainer.setAttribute('data-camera-id', cameraId);
             
             // Create video element
             const video = document.createElement('video');
@@ -631,19 +634,60 @@ class WebRTCSignalingClient {
             timestamp: new Date().toISOString()
         });
         
-        // Clear existing content
-        this.streamsGrid.innerHTML = '';
+        // Get currently displayed stream elements
+        const currentElements = Array.from(this.streamsGrid.children);
+        const currentStreamIds = new Set();
         
+        // Identify current stream elements (skip "no-streams" message)
+        currentElements.forEach(element => {
+            if (element.classList.contains('stream-container')) {
+                const cameraId = element.getAttribute('data-camera-id');
+                if (cameraId) {
+                    currentStreamIds.add(cameraId);
+                }
+            }
+        });
+        
+        // Handle empty state
         if (this.activeStreams.size === 0) {
-            const noStreams = document.createElement('div');
-            noStreams.className = 'no-streams';
-            noStreams.textContent = 'No active streams. Connect to a camera to start streaming.';
-            this.streamsGrid.appendChild(noStreams);
-        } else {
-            // Add all active stream elements
-            for (const cameraId of this.activeStreams) {
+            // Only clear and show "no streams" message if we have streams currently displayed
+            if (currentStreamIds.size > 0) {
+                this.streamsGrid.innerHTML = '';
+                const noStreams = document.createElement('div');
+                noStreams.className = 'no-streams';
+                noStreams.textContent = 'No active streams. Connect to a camera to start streaming.';
+                this.streamsGrid.appendChild(noStreams);
+            }
+            return;
+        }
+        
+        // Remove "no streams" message if it exists
+        const noStreamsElement = this.streamsGrid.querySelector('.no-streams');
+        if (noStreamsElement) {
+            noStreamsElement.remove();
+        }
+        
+        // Remove stream elements that are no longer active
+        currentStreamIds.forEach(cameraId => {
+            if (!this.activeStreams.has(cameraId)) {
+                const elementToRemove = this.streamsGrid.querySelector(`[data-camera-id="${cameraId}"]`);
+                if (elementToRemove) {
+                    elementToRemove.remove();
+                    this.log(`Removed stream element for inactive camera ${cameraId}`, 'info', {
+                        cameraId,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            }
+        });
+        
+        // Add new stream elements that aren't already displayed
+        for (const cameraId of this.activeStreams) {
+            if (!currentStreamIds.has(cameraId)) {
                 const streamElement = this.streamElements.get(cameraId);
                 if (streamElement) {
+                    // Set data attribute for tracking
+                    streamElement.setAttribute('data-camera-id', cameraId);
                     this.streamsGrid.appendChild(streamElement);
                     
                     this.log(`Added stream element for camera ${cameraId}`, 'info', {
@@ -852,7 +896,7 @@ class WebRTCSignalingClient {
         // Clear any existing intervals
         this.stopPingPong();
         
-        // Send ping every 25 seconds (server pings every 30)
+        // Send ping using configured interval
         this.pingInterval = setInterval(() => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 this.sendMessage({
@@ -874,7 +918,7 @@ class WebRTCSignalingClient {
                     }
                 }, 5000); // Wait 5 seconds for pong
             }
-        }, 25000);
+        }, CONFIG.WEBSOCKET.PING_INTERVAL);
     }
     
     stopPingPong() {
@@ -931,9 +975,7 @@ class WebRTCSignalingClient {
             listItem.className = 'camera-item';
             
             const cameraInfo = document.createElement('div');
-            cameraInfo.style.display = 'flex';
-            cameraInfo.style.alignItems = 'center';
-            cameraInfo.style.gap = '8px';
+            cameraInfo.className = 'camera-info';
             
             const statusIndicator = document.createElement('div');
             statusIndicator.style.width = '8px';
@@ -950,8 +992,7 @@ class WebRTCSignalingClient {
             cameraInfo.appendChild(cameraIdSpan);
             
             const buttonContainer = document.createElement('div');
-            buttonContainer.style.display = 'flex';
-            buttonContainer.style.gap = '8px';
+            buttonContainer.className = 'button-container';
             
             if (camera.streaming) {
                 // Show single Hang Up button when streaming
@@ -963,7 +1004,7 @@ class WebRTCSignalingClient {
             } else {
                 // Show both Request Call and Call buttons when not streaming
                 const requestCallButton = document.createElement('button');
-                requestCallButton.className = 'call-button';
+                requestCallButton.className = 'call-button request';
                 requestCallButton.textContent = 'Request Call';
                 requestCallButton.onclick = () => this.requestCall(cameraId);
                 
@@ -1001,8 +1042,6 @@ class WebRTCSignalingClient {
     setupGlobalStats() {
         this.updateStatValue('activeStreams', '0');
         this.updateStatValue('totalCameras', '0');
-        this.updateStatValue('connectionState', 'disconnected');
-        this.updateStatValue('iceConnectionState', 'new');
         this.updateStatValue('totalBytesReceived', '0');
         this.updateStatValue('totalPacketsReceived', '0');
         this.updateStatValue('averageFrameRate', '0 fps');

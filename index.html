@@ -3,840 +3,970 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Signaling Server</title>
+    <title>WebRTC Signaling Client</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
+        * {
             margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
+            padding: 0;
+            box-sizing: border-box;
         }
-        
-        .main-container {
-            max-width: 1400px;
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
             margin: 0 auto;
-        }
-        
-        .streams-section {
-            background: white;
             padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #718096;
             margin-bottom: 20px;
         }
-        
+
+        .connection-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .connection-section {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status {
+            padding: 8px 16px;
+            border-radius: 25px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .status.connected {
+            background: #48bb78;
+            color: white;
+        }
+
+        .status.disconnected {
+            background: #f56565;
+            color: white;
+        }
+
+        .url-display {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            background: rgba(0, 0, 0, 0.05);
+            padding: 8px 12px;
+            border-radius: 8px;
+            color: #4a5568;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .config-note {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #718096;
+            margin-top: 10px;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .sidebar {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(10px);
+            height: fit-content;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .sidebar h2 {
+            font-size: 1.5rem;
+            color: #2d3748;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .camera-list {
+            list-style: none;
+        }
+
+        .camera-item {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .camera-item:hover {
+            box-shadow: 0 6px 25px rgba(0, 0, 0, 0.12);
+            transform: translateY(-2px);
+        }
+
+        .camera-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .camera-status {
+            width: 12px;
+            height: 12px;
+            background: #48bb78;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .camera-id {
+            font-weight: 600;
+            color: #2d3748;
+            font-size: 0.95rem;
+            word-break: break-all;
+            flex: 1;
+        }
+
+        .button-container {
+            display: flex;
+            gap: 12px;
+            width: 100%;
+        }
+
+        .call-button {
+            background: #4299e1;
+            color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: all 0.3s ease;
+            min-height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+        }
+
+        .call-button:hover {
+            background: #3182ce;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(66, 153, 225, 0.3);
+        }
+
+        .call-button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 6px rgba(66, 153, 225, 0.3);
+        }
+
+        .call-button.request {
+            background: #63b3ed;
+        }
+
+        .call-button.request:hover {
+            background: #4299e1;
+            box-shadow: 0 4px 12px rgba(99, 179, 237, 0.3);
+        }
+
+        .call-button.request:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 6px rgba(99, 179, 237, 0.3);
+        }
+
+        .call-button.hang-up {
+            background: #f56565;
+        }
+
+        .call-button.hang-up:hover {
+            background: #e53e3e;
+            box-shadow: 0 4px 12px rgba(245, 101, 101, 0.3);
+        }
+
+        .call-button.hang-up:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 6px rgba(245, 101, 101, 0.3);
+        }
+
+        /* Button Legend */
+        .button-legend {
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            font-size: 0.85rem;
+            color: #4a5568;
+            border: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+        .legend-title {
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .legend-color.request {
+            background: #63b3ed;
+        }
+
+        .legend-color.call {
+            background: #4299e1;
+        }
+
+        .legend-color.hangup {
+            background: #f56565;
+        }
+
+        .legend-text {
+            line-height: 1.3;
+        }
+
+        .no-cameras {
+            text-align: center;
+            color: #a0aec0;
+            padding: 20px;
+            font-style: italic;
+        }
+
+        .streams-section {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .streams-section h2 {
+            font-size: 1.5rem;
+            color: #2d3748;
+            margin-bottom: 15px;
+        }
+
         .streams-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
         }
-        
+
         .stream-container {
             position: relative;
             background: #000;
-            border-radius: 8px;
+            border-radius: 10px;
             overflow: hidden;
             aspect-ratio: 16/9;
-            min-height: 225px;
         }
-        
+
         .stream-video {
             width: 100%;
             height: 100%;
             object-fit: cover;
         }
-        
-        .stream-placeholder {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #ccc;
-            font-size: 16px;
-            text-align: center;
-            pointer-events: none;
-        }
-        
+
         .stream-overlay {
             position: absolute;
             top: 10px;
             left: 10px;
-            z-index: 10;
+            display: flex;
+            gap: 8px;
         }
-        
-        .stream-info {
-            position: absolute;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 5px 10px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-            z-index: 10;
-        }
-        
+
         .stream-status {
             width: 12px;
             height: 12px;
             border-radius: 50%;
-            background: #dc3545;
             border: 2px solid white;
         }
-        
+
         .stream-status.connected {
-            background: #28a745;
+            background: #48bb78;
         }
-        
-        .control-section {
-            display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
+
+        .stream-status.disconnected {
+            background: #f56565;
         }
-        
-        .camera-section {
-            flex: 1;
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        
-        .stats-section {
-            flex: 1;
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        
-        .status {
-            padding: 10px;
-            border-radius: 4px;
-            margin-bottom: 10px;
-            font-weight: bold;
-        }
-        
-        .status.connected {
-            background-color: #d4edda;
-            color: #155724;
-        }
-        
-        .status.disconnected {
-            background-color: #f8d7da;
-            color: #721c24;
-        }
-        
-        .camera-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-        
-        .camera-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px;
-            margin-bottom: 8px;
-            background: #f8f9fa;
-            border-radius: 4px;
-            border: 1px solid #dee2e6;
-        }
-        
-        .camera-id {
-            font-weight: bold;
-            color: #495057;
-        }
-        
-        .call-button {
-            background-color: #007bff;
+
+        .stream-info {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
             color: white;
-            border: none;
-            padding: 8px 16px;
+            padding: 4px 8px;
             border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.2s;
+            font-size: 0.8rem;
         }
-        
-        .call-button:hover {
-            background-color: #0056b3;
-        }
-        
-        .call-button:disabled {
-            background-color: #6c757d;
-            cursor: not-allowed;
-        }
-        
-        .call-button.hang-up {
-            background-color: #dc3545;
-        }
-        
-        .call-button.hang-up:hover {
-            background-color: #c82333;
-        }
-        
-        .stat-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 4px 0;
-            border-bottom: 1px solid #e9ecef;
-        }
-        
-        .stat-item:last-child {
-            border-bottom: none;
-        }
-        
-        .stat-label {
-            font-weight: bold;
-            color: #495057;
-        }
-        
-        .stat-value {
-            color: #007bff;
-            font-family: monospace;
-        }
-        
-        .logs-section {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            width: 100%;
-        }
-        
-        .log-container {
-            max-height: 400px;
-            overflow-y: auto;
-            border: 1px solid #dee2e6;
-            border-radius: 4px;
-            padding: 10px;
-            background: #f8f9fa;
-        }
-        
-        .log-entry {
-            margin: 5px 0;
-            padding: 8px;
-            font-family: monospace;
-            font-size: 12px;
-            background: white;
-            border-radius: 4px;
-            border-left: 4px solid #17a2b8;
-        }
-        
-        .log-entry.info {
-            border-left-color: #17a2b8;
-        }
-        
-        .log-entry.error {
-            border-left-color: #dc3545;
-            background-color: #fff5f5;
-        }
-        
-        .log-entry.success {
-            border-left-color: #28a745;
-            background-color: #f8fff8;
-        }
-        
-        .log-entry.warning {
-            border-left-color: #ffc107;
-            background-color: #fffef0;
-        }
-        
-        .log-timestamp {
-            color: #6c757d;
-            font-weight: bold;
-        }
-        
-        .log-message {
-            color: #343a40;
-            margin-left: 10px;
-        }
-        
-        .log-data {
-            color: #007bff;
-            font-family: monospace;
-            font-size: 11px;
-            margin-left: 10px;
-            margin-top: 2px;
-            word-wrap: break-word;
-            opacity: 0.9;
-        }
-        
-        h1 {
-            color: #343a40;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-        
-        h2 {
-            color: #495057;
-            margin-bottom: 15px;
-        }
-        
-        h3 {
-            color: #495057;
-            margin-bottom: 10px;
-        }
-        
-        .no-cameras {
-            text-align: center;
-            color: #6c757d;
-            font-style: italic;
-            padding: 20px;
-        }
-        
+
         .no-streams {
             text-align: center;
-            color: #6c757d;
-            font-style: italic;
+            color: #a0aec0;
             padding: 40px;
+            font-size: 1.1rem;
         }
-        
-        /* Floating WebRTC Stats Panel */
+
+        .stats-section {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.02);
+            border-radius: 10px;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: #718096;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #2d3748;
+        }
+
+        .logs-section {
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .log-container {
+            height: 300px;
+            overflow-y: auto;
+            background: #1a202c;
+            border-radius: 8px;
+            padding: 15px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.8rem;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .log-entry.info {
+            color: #90cdf4;
+        }
+
+        .log-entry.success {
+            color: #68d391;
+        }
+
+        .log-entry.warning {
+            color: #fbd38d;
+        }
+
+        .log-entry.error {
+            color: #fc8181;
+        }
+
+        .log-timestamp {
+            color: #a0aec0;
+            margin-right: 8px;
+        }
+
+        .log-data {
+            color: #e2e8f0;
+            margin-left: 20px;
+            font-size: 0.75rem;
+            opacity: 0.8;
+        }
+
+        /* Floating Stats Panel */
         .floating-stats {
             position: fixed;
-            bottom: 100px;
+            top: 20px;
             right: 20px;
-            width: 500px;
-            min-height: 50px;
-            min-width: 300px;
+            width: 320px;
             max-height: 80vh;
             background: rgba(255, 255, 255, 0.95);
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
             z-index: 1000;
-            overflow: hidden;
             transition: all 0.3s ease;
-            cursor: move;
-            user-select: none;
-            resize: both;
-        }
-        
-        .floating-stats.collapsed {
-            height: 50px !important;
             overflow: hidden;
-            resize: none;
-            opacity: 0.7;
-        }
-        
-        .floating-stats.collapsed:hover {
-            opacity: 1;
-        }
-        
-        .floating-stats.collapsed .floating-stats-content {
-            display: none !important;
-        }
-        
-        .floating-stats.has-data {
-            height: auto;
-            max-height: 80vh;
-        }
-        
-        .floating-stats.has-data.collapsed {
-            height: 50px !important;
-            max-height: 50px !important;
-        }
-        
-        .floating-stats-header {
-            background: rgba(0, 123, 255, 0.1);
-            padding: 12px 16px;
-            border-bottom: 1px solid rgba(0, 123, 255, 0.2);
             cursor: move;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             user-select: none;
         }
-        
-        .floating-stats-title {
-            font-weight: bold;
-            color: #007bff;
-            font-size: 14px;
+
+        .floating-stats.dragging {
+            transition: none;
+            transform: rotate(2deg);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
         }
-        
-        .floating-stats-controls {
+
+        .floating-stats.collapsed {
+            height: 60px;
+            overflow: hidden;
+        }
+
+        .floating-stats.has-data {
+            max-height: 85vh;
+        }
+
+        .floating-stats-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 16px;
+            background: rgba(255, 255, 255, 0.9);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            border-radius: 12px 12px 0 0;
+            user-select: none;
+            background: rgba(255, 255, 255, 0.5);
+            min-height: 48px;
+        }
+
+        .floating-stats-drag-handle {
+            flex: 1;
+            cursor: grab;
+            padding: 4px 0;
+            border-radius: 6px;
+            transition: background-color 0.2s ease;
+            margin-right: 4px;
+            display: flex;
+            align-items: center;
+        }
+
+        .floating-stats-drag-handle:hover {
+            background: rgba(0, 0, 0, 0.03);
+        }
+
+        .floating-stats-drag-handle:active {
+            cursor: grabbing;
+            background: rgba(0, 0, 0, 0.05);
+        }
+
+        .floating-stats-title {
+            font-weight: 700;
+            color: #2d3748;
+            font-size: 1rem;
             display: flex;
             align-items: center;
             gap: 8px;
+            pointer-events: none;
         }
-        
+
+        .floating-stats-title::before {
+            content: "📊";
+            font-size: 0.9rem;
+        }
+
         .floating-stats-toggle {
-            color: #007bff;
-            font-size: 18px;
-            transition: transform 0.3s ease;
+            font-size: 1.4rem;
+            color: #718096;
+            transition: all 0.3s ease;
             cursor: pointer;
+            padding: 8px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.08);
+            min-width: 40px;
+            min-height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-weight: bold;
+            margin-left: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
-        
-        .floating-stats-resize {
-            color: #007bff;
-            font-size: 16px;
-            cursor: pointer;
-            padding: 2px;
-            border-radius: 3px;
-            transition: background-color 0.2s ease;
+
+        .floating-stats-toggle:hover {
+            background: rgba(0, 0, 0, 0.12);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
-        
-        .floating-stats-resize:hover {
-            background-color: rgba(0, 123, 255, 0.1);
+
+        .floating-stats-toggle:active {
+            background: rgba(0, 0, 0, 0.18);
+            transform: scale(0.95);
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
         }
-        
+
         .floating-stats.collapsed .floating-stats-toggle {
             transform: rotate(180deg);
         }
-        
-        .floating-stats.expanded {
-            width: 650px;
-            max-height: 85vh;
+
+        .floating-stats.collapsed .floating-stats-toggle:active {
+            transform: rotate(180deg) scale(0.95);
         }
-        
+
         .floating-stats-content {
-            padding: 20px;
-            max-height: calc(80vh - 60px);
+            max-height: calc(90vh - 80px);
             overflow-y: auto;
+            padding: 0 20px 20px;
         }
-        
-        .floating-stats.expanded .floating-stats-content {
-            max-height: calc(85vh - 60px);
+
+        .floating-stats-no-data {
+            text-align: center;
+            color: #a0aec0;
+            padding: 20px;
+            font-style: italic;
         }
-        
-        /* Resize handle styling */
-        .floating-stats::after {
-            content: '';
-            position: absolute;
-            bottom: 0;
-            right: 0;
-            width: 15px;
-            height: 15px;
-            background: linear-gradient(-45deg, transparent 30%, rgba(0, 123, 255, 0.3) 30%, rgba(0, 123, 255, 0.3) 50%, transparent 50%);
-            cursor: se-resize;
-            border-radius: 0 0 12px 0;
-            opacity: 0;
-            transition: opacity 0.2s ease;
+
+        .floating-stats-camera {
+            margin-bottom: 25px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+            padding-bottom: 20px;
         }
-        
-        .floating-stats:hover::after {
-            opacity: 1;
+
+        .floating-stats-camera:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+            padding-bottom: 0;
         }
-        
-        .floating-stats.collapsed::after {
-            display: none;
+
+        .floating-stats-camera-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 15px;
         }
-        
+
+        .floating-stats-camera-status {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #48bb78;
+        }
+
         .floating-stats-section {
-            margin-bottom: 20px;
+            margin-bottom: 15px;
         }
-        
+
         .floating-stats-section:last-child {
             margin-bottom: 0;
         }
-        
+
         .floating-stats-section-title {
-            font-weight: bold;
-            color: #495057;
-            font-size: 13px;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid #e9ecef;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #4a5568;
+            margin-bottom: 8px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
         }
-        
+
         .floating-stat-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 6px 0;
-            font-size: 14px;
+            padding: 4px 0;
+            font-size: 0.85rem;
         }
-        
+
         .floating-stat-label {
-            color: #6c757d;
-            font-weight: 500;
+            color: #718096;
         }
-        
+
         .floating-stat-value {
-            color: #007bff;
-            font-family: 'Courier New', monospace;
-            font-weight: bold;
+            font-weight: 600;
+            color: #2d3748;
         }
-        
+
         .floating-stat-value.good {
-            color: #28a745;
+            color: #38a169;
         }
-        
+
         .floating-stat-value.warning {
-            color: #ffc107;
+            color: #d69e2e;
         }
-        
+
         .floating-stat-value.error {
-            color: #dc3545;
+            color: #e53e3e;
         }
-        
-        .floating-stats-camera {
-            background: rgba(248, 249, 250, 0.8);
-            border-radius: 10px;
-            padding: 16px;
-            margin-bottom: 16px;
-            border-left: 4px solid #007bff;
-        }
-        
-        .floating-stats-camera-title {
-            font-weight: bold;
-            color: #343a40;
-            font-size: 15px;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .floating-stats-camera-status {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #28a745;
-        }
-        
-        .floating-stats-camera-status.disconnected {
-            background: #dc3545;
-        }
-        
-        .floating-stats-no-data {
-            text-align: center;
-            color: #6c757d;
-            font-style: italic;
-            padding: 30px;
-            font-size: 14px;
-        }
-        
-        /* Responsive adjustments */
+
+        /* Mobile Responsive Design */
         @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .connection-info {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .connection-section {
+                justify-content: center;
+            }
+
+            .url-display {
+                max-width: none;
+                text-align: center;
+            }
+
             .floating-stats {
-                width: 90vw;
-                max-height: 70vh;
-                bottom: 10px;
-                left: 5vw;
-                resize: none; /* Disable resize on mobile */
+                width: calc(100vw - 40px);
+                max-width: 350px;
+                right: 20px;
+                left: 20px;
+                margin: 0 auto;
+                position: fixed;
+                top: 80px;
             }
-            
-            .floating-stats-content {
-                max-height: calc(70vh - 60px);
+
+            .streams-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .camera-item {
+                padding: 14px;
+                margin-bottom: 12px;
+                gap: 14px;
+            }
+
+            .call-button {
+                min-height: 48px;
+                font-size: 1rem;
+                padding: 14px 16px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 15px;
+            }
+
+            .floating-stats {
+                width: calc(100vw - 30px);
+                right: 15px;
+                left: 15px;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .button-container {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .call-button {
+                min-height: 50px;
+                font-size: 1rem;
                 padding: 16px;
-            }
-            
-            .floating-stats.expanded {
-                width: 95vw;
-                max-height: 75vh;
-                left: 2.5vw;
-            }
-            
-            .floating-stats.expanded .floating-stats-content {
-                max-height: calc(75vh - 60px);
-            }
-            
-            .floating-stats.has-data {
-                max-height: 70vh;
-            }
-            
-            .floating-stats::after {
-                display: none; /* Hide resize handle on mobile */
             }
         }
     </style>
 </head>
 <body>
-    <div class="main-container">
-        <h1>WebRTC Signaling Server</h1>
-        
-        <!-- Video Streams Section -->
-        <div class="streams-section">
-            <h2>Video Streams</h2>
-            <div class="streams-grid" id="streamsGrid">
-                <div class="no-streams">
-                    No active streams. Connect to a camera to start streaming.
+    <div class="container">
+        <div class="header">
+            <h1 class="title">WebRTC Signaling Client</h1>
+            <p class="subtitle">Real-time video streaming with connection stability monitoring</p>
+            
+            <div class="connection-info">
+                <div class="connection-section">
+                    <span>Status:</span>
+                    <span id="connectionStatus" class="status disconnected">Disconnected</span>
                 </div>
-            </div>
-        </div>
-        
-        <!-- Controls Section -->
-        <div class="control-section">
-            <div class="camera-section">
-                <h2>Registered Cameras</h2>
-                <div class="status disconnected" id="connectionStatus">
-                    Disconnected
+                <div class="connection-section">
+                    <span>Server:</span>
+                    <span id="serverUrl" class="url-display">Loading...</span>
                 </div>
-                <ul class="camera-list" id="cameraList">
-                    <!-- Camera items will be populated here -->
-                </ul>
             </div>
             
-            <div class="stats-section">
-                <h2>Average WebRTC Statistics</h2>
-                <div id="statsContainer">
-                    <div class="stat-item">
-                        <span class="stat-label">Active Streams:</span>
-                        <span class="stat-value" id="activeStreams">0</span>
+            <div class="config-note">
+                To change the server URL, edit the <code>CONFIG.WEBSOCKET.URL</code> in <code>config.js</code>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <h2>Cameras</h2>
+                <ul id="cameraList" class="camera-list">
+                    <li class="no-cameras">No cameras registered</li>
+                </ul>
+                <div class="button-legend">
+                    <div class="legend-title">Call Button Legend</div>
+                    <div class="legend-item">
+                        <span class="legend-color request"></span>
+                        <span class="legend-text">Request Call - Request SDP offer from remote peer and send answer</span>
                     </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Total Cameras:</span>
-                        <span class="stat-value" id="totalCameras">0</span>
+                    <div class="legend-item">
+                        <span class="legend-color call"></span>
+                        <span class="legend-text">Call - Send SDP offer and receive answer from remote peer</span>
                     </div>
-                    <div class="stat-item">
-                        <span class="stat-label">ICE Connection State:</span>
-                        <span class="stat-value" id="iceConnectionState">new</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Total Bytes Received:</span>
-                        <span class="stat-value" id="totalBytesReceived">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Total Packets Received:</span>
-                        <span class="stat-value" id="totalPacketsReceived">0</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Average Frame Rate:</span>
-                        <span class="stat-value" id="averageFrameRate">0 fps</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Average Bandwidth:</span>
-                        <span class="stat-value" id="averageBandwidth">0 kbps</span>
+                    <div class="legend-item">
+                        <span class="legend-color hangup"></span>
+                        <span class="legend-text">Hang Up - Terminate the WebRTC connection</span>
                     </div>
                 </div>
             </div>
+
+            <div class="streams-section">
+                <h2>Video Streams</h2>
+                <div id="streamsGrid" class="streams-grid">
+                    <div class="no-streams">No active streams. Connect to a camera to start streaming.</div>
+                </div>
+            </div>
         </div>
-        
-        <!-- Logs Section -->
+
+        <div class="stats-section">
+            <h2>Global Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-label">Active Streams</div>
+                    <div id="activeStreams" class="stat-value">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total Cameras</div>
+                    <div id="totalCameras" class="stat-value">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total Bytes Received</div>
+                    <div id="totalBytesReceived" class="stat-value">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Total Packets Received</div>
+                    <div id="totalPacketsReceived" class="stat-value">0</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Average Frame Rate</div>
+                    <div id="averageFrameRate" class="stat-value">0 fps</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Average Bandwidth</div>
+                    <div id="averageBandwidth" class="stat-value">0 kbps</div>
+                </div>
+            </div>
+        </div>
+
         <div class="logs-section">
-            <h2>System Logs</h2>
-            <div class="log-container" id="logContainer">
-                <!-- Log entries will be populated here -->
-            </div>
+            <h2>Connection Logs</h2>
+            <div id="logContainer" class="log-container"></div>
         </div>
     </div>
-    
-    <!-- Floating WebRTC Stats Panel -->
-    <div class="floating-stats" id="floatingStats">
+
+    <!-- Floating Stats Panel -->
+    <div id="floatingStats" class="floating-stats collapsed">
         <div class="floating-stats-header">
-            <div class="floating-stats-title">Stream Statistics</div>
-            <div class="floating-stats-controls">
-                <div class="floating-stats-resize" onclick="toggleStatsSize(event)" title="Toggle large view">⤢</div>
-                <div class="floating-stats-toggle">▼</div>
+            <div class="floating-stats-drag-handle">
+                <div class="floating-stats-title">Stream Stats</div>
             </div>
+            <div class="floating-stats-toggle" onclick="toggleFloatingStats()">▼</div>
         </div>
-        <div class="floating-stats-content" id="floatingStatsContent">
-            <div class="floating-stats-no-data">
-                No active video streams
-            </div>
+        <div id="floatingStatsContent" class="floating-stats-content">
+            <div class="floating-stats-no-data">No active video streams</div>
         </div>
     </div>
-    
+
     <script>
+        // Floating stats panel functionality
         let isDragging = false;
-        let isResizing = false;
         let dragOffset = { x: 0, y: 0 };
         
         function toggleFloatingStats() {
-            const floatingStats = document.getElementById('floatingStats');
-            if (floatingStats) {
-                const wasCollapsed = floatingStats.classList.contains('collapsed');
-                floatingStats.classList.toggle('collapsed');
-                const isNowCollapsed = floatingStats.classList.contains('collapsed');
-                
-                console.log('Toggled floating stats:', isNowCollapsed ? 'collapsed' : 'expanded');
-                console.log('Previous state:', wasCollapsed ? 'collapsed' : 'expanded');
-                
-                // Force a reflow to ensure the transition works
-                floatingStats.offsetHeight;
-            } else {
-                console.error('Floating stats element not found');
-            }
+            const panel = document.getElementById('floatingStats');
+            panel.classList.toggle('collapsed');
         }
         
-        function toggleStatsSize(event) {
-            event.stopPropagation(); // Prevent triggering the collapse
+        function initDragFunctionality() {
             const floatingStats = document.getElementById('floatingStats');
-            if (floatingStats) {
-                const wasExpanded = floatingStats.classList.contains('expanded');
-                floatingStats.classList.toggle('expanded');
-                const isNowExpanded = floatingStats.classList.contains('expanded');
-                
-                const resizeButton = event.target;
-                if (isNowExpanded) {
-                    resizeButton.textContent = '⤢';
-                    resizeButton.title = 'Toggle normal view';
-                } else {
-                    resizeButton.textContent = '⤢';
-                    resizeButton.title = 'Toggle large view';
-                }
-                
-                console.log('Toggled stats size:', isNowExpanded ? 'expanded' : 'normal');
-            }
-        }
-        
-        // Drag functionality
-        function initDrag() {
-            const floatingStats = document.getElementById('floatingStats');
-            if (!floatingStats) return;
+            const dragHandle = floatingStats.querySelector('.floating-stats-drag-handle');
             
-            const header = floatingStats.querySelector('.floating-stats-header');
-            if (!header) return;
-            
-            header.addEventListener('mousedown', startDrag);
+            // Mouse events
+            dragHandle.addEventListener('mousedown', startDrag);
             document.addEventListener('mousemove', drag);
             document.addEventListener('mouseup', stopDrag);
             
-            // Touch support for mobile
-            header.addEventListener('touchstart', startDragTouch);
-            document.addEventListener('touchmove', dragTouch);
+            // Touch events for mobile
+            dragHandle.addEventListener('touchstart', startDragTouch, { passive: false });
+            document.addEventListener('touchmove', dragTouch, { passive: false });
             document.addEventListener('touchend', stopDrag);
             
-            // Resize functionality
-            floatingStats.addEventListener('mousedown', handleResizeStart);
-            document.addEventListener('mousemove', handleResize);
-            document.addEventListener('mouseup', handleResizeEnd);
+            // Prevent text selection while dragging
+            dragHandle.addEventListener('selectstart', (e) => e.preventDefault());
         }
         
         function startDrag(e) {
-            if (isResizing) return;
             e.preventDefault();
+            e.stopPropagation();
             isDragging = true;
             const floatingStats = document.getElementById('floatingStats');
             const rect = floatingStats.getBoundingClientRect();
+            
             dragOffset.x = e.clientX - rect.left;
             dragOffset.y = e.clientY - rect.top;
-            floatingStats.style.transition = 'none';
+            
+            floatingStats.classList.add('dragging');
+            document.body.style.userSelect = 'none';
         }
         
         function startDragTouch(e) {
-            if (isResizing) return;
             e.preventDefault();
+            e.stopPropagation();
+            
             isDragging = true;
             const floatingStats = document.getElementById('floatingStats');
             const rect = floatingStats.getBoundingClientRect();
             const touch = e.touches[0];
+            
             dragOffset.x = touch.clientX - rect.left;
             dragOffset.y = touch.clientY - rect.top;
-            floatingStats.style.transition = 'none';
+            
+            floatingStats.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+            
+            // Add visual feedback for mobile
+            navigator.vibrate && navigator.vibrate(50);
         }
         
         function drag(e) {
             if (!isDragging) return;
             e.preventDefault();
+            
             const floatingStats = document.getElementById('floatingStats');
             const x = e.clientX - dragOffset.x;
             const y = e.clientY - dragOffset.y;
             
-            // Keep panel within viewport bounds with some margin
-            const margin = 20;
+            // Keep panel within viewport bounds
+            const margin = 10;
             const maxX = window.innerWidth - floatingStats.offsetWidth - margin;
             const maxY = window.innerHeight - floatingStats.offsetHeight - margin;
             
-            floatingStats.style.left = Math.max(margin, Math.min(x, maxX)) + 'px';
-            floatingStats.style.top = Math.max(margin, Math.min(y, maxY)) + 'px';
+            const boundedX = Math.max(margin, Math.min(x, maxX));
+            const boundedY = Math.max(margin, Math.min(y, maxY));
+            
+            floatingStats.style.left = boundedX + 'px';
+            floatingStats.style.top = boundedY + 'px';
+            floatingStats.style.right = 'auto';
             floatingStats.style.bottom = 'auto';
         }
         
         function dragTouch(e) {
             if (!isDragging) return;
             e.preventDefault();
+            
             const floatingStats = document.getElementById('floatingStats');
             const touch = e.touches[0];
             const x = touch.clientX - dragOffset.x;
             const y = touch.clientY - dragOffset.y;
             
-            // Keep panel within viewport bounds with some margin
-            const margin = 20;
+            // Keep panel within viewport bounds
+            const margin = 10;
             const maxX = window.innerWidth - floatingStats.offsetWidth - margin;
             const maxY = window.innerHeight - floatingStats.offsetHeight - margin;
             
-            floatingStats.style.left = Math.max(margin, Math.min(x, maxX)) + 'px';
-            floatingStats.style.top = Math.max(margin, Math.min(y, maxY)) + 'px';
+            const boundedX = Math.max(margin, Math.min(x, maxX));
+            const boundedY = Math.max(margin, Math.min(y, maxY));
+            
+            floatingStats.style.left = boundedX + 'px';
+            floatingStats.style.top = boundedY + 'px';
+            floatingStats.style.right = 'auto';
             floatingStats.style.bottom = 'auto';
         }
         
         function stopDrag() {
             if (!isDragging) return;
             isDragging = false;
-            const floatingStats = document.getElementById('floatingStats');
-            if (floatingStats) {
-                floatingStats.style.transition = 'all 0.3s ease';
-            }
-        }
-        
-        // Resize functionality
-        function handleResizeStart(e) {
-            const rect = e.target.getBoundingClientRect();
-            const isResizeHandle = e.clientX > rect.right - 20 && e.clientY > rect.bottom - 20;
-            
-            if (isResizeHandle && !isDragging) {
-                e.preventDefault();
-                isResizing = true;
-                const floatingStats = document.getElementById('floatingStats');
-                if (floatingStats) {
-                    floatingStats.style.transition = 'none';
-                }
-            }
-        }
-        
-        function handleResize(e) {
-            if (!isResizing) return;
-            e.preventDefault();
             
             const floatingStats = document.getElementById('floatingStats');
-            const rect = floatingStats.getBoundingClientRect();
-            
-            const newWidth = e.clientX - rect.left;
-            const newHeight = e.clientY - rect.top;
-            
-            // Apply minimum and maximum constraints
-            const minWidth = 300;
-            const maxWidth = window.innerWidth - rect.left - 40; // 40px margin
-            const minHeight = 200;
-            const maxHeight = window.innerHeight - rect.top - 40; // 40px margin
-            
-            const constrainedWidth = Math.max(minWidth, Math.min(newWidth, maxWidth));
-            const constrainedHeight = Math.max(minHeight, Math.min(newHeight, maxHeight));
-            
-            floatingStats.style.width = constrainedWidth + 'px';
-            floatingStats.style.height = constrainedHeight + 'px';
+            floatingStats.classList.remove('dragging');
+            document.body.style.userSelect = '';
         }
         
-        function handleResizeEnd() {
-            if (!isResizing) return;
-            isResizing = false;
-            const floatingStats = document.getElementById('floatingStats');
-            if (floatingStats) {
-                floatingStats.style.transition = 'all 0.3s ease';
-            }
-        }
-        
-        // Initialize drag when page loads
-        document.addEventListener('DOMContentLoaded', initDrag);
-        
-        // Add additional click handler for better toggle functionality
-        document.addEventListener('DOMContentLoaded', function() {
-            const floatingStats = document.getElementById('floatingStats');
-            if (floatingStats) {
-                const header = floatingStats.querySelector('.floating-stats-header');
-                if (header) {
-                    // Remove existing onclick and add event listener
-                    header.removeAttribute('onclick');
-                    header.addEventListener('click', function(e) {
-                        // Don't toggle if clicking on controls
-                        if (e.target.closest('.floating-stats-controls')) {
-                            return;
-                        }
-                        toggleFloatingStats();
-                    });
-                }
-            }
+        // Initialize drag functionality when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initDragFunctionality();
+            
+            // Display current server URL in the header
+            const serverUrlElement = document.getElementById('serverUrl');
+            serverUrlElement.textContent = CONFIG.WEBSOCKET.URL;
         });
     </script>
-    
+
+    <!-- Configuration and Client Scripts -->
+    <script src="config.js"></script>
     <script src="client.js"></script>
 </body>
 </html> 
