@@ -6,8 +6,84 @@ const path = require('path');
 // Create Express app
 const app = express();
 
+// Parse raw body for SDP
+app.use('/whep-proxy', express.raw({ type: 'application/sdp', limit: '10mb' }));
+
 // Serve static files (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, '.')));
+
+// WHEP HTTP Proxy endpoint
+app.post('/whep-proxy', async (req, res) => {
+    const targetUrl = req.headers['x-target-url'];
+
+    if (!targetUrl) {
+        return res.status(400).send('Missing X-Target-URL header');
+    }
+
+    log(`WHEP proxy request to: ${targetUrl}`);
+
+    try {
+        // Make the request to the actual WHEP server
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/sdp',
+                'Accept': 'application/sdp'
+            },
+            body: req.body
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            log(`WHEP proxy error: ${response.status} - ${errorText}`);
+            return res.status(response.status).send(errorText);
+        }
+
+        // Get the response SDP
+        const responseSdp = await response.text();
+
+        // Forward any location header if present
+        const location = response.headers.get('location');
+        if (location) {
+            res.setHeader('X-WHEP-Location', location);
+        }
+
+        // Send the response SDP back
+        res.setHeader('Content-Type', 'application/sdp');
+        res.send(responseSdp);
+
+        log(`WHEP proxy success - response length: ${responseSdp.length}`);
+
+    } catch (error) {
+        log(`WHEP proxy failed: ${error.message}`);
+        res.status(500).send(`Proxy error: ${error.message}`);
+    }
+});
+
+// WHEP DELETE proxy endpoint
+app.delete('/whep-proxy', async (req, res) => {
+    const targetUrl = req.headers['x-target-url'];
+
+    if (!targetUrl) {
+        return res.status(400).send('Missing X-Target-URL header');
+    }
+
+    log(`WHEP DELETE proxy request to: ${targetUrl}`);
+
+    try {
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'DELETE'
+        });
+
+        res.status(response.status).send(response.ok ? 'OK' : 'Failed');
+
+    } catch (error) {
+        log(`WHEP DELETE proxy failed: ${error.message}`);
+        res.status(500).send(`Proxy error: ${error.message}`);
+    }
+});
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -26,10 +102,18 @@ const clients = new Map();
 const cameras = new Map();
 const iceCandidateCount = new Map(); // Track ICE candidates per camera
 
-// Default ICE servers
+// Default ICE servers (expanded STUN list)
 const defaultIceServers = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    {
+        urls: [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302',
+            'stun:stun3.l.google.com:19302',
+            'stun:stun4.l.google.com:19302'
+        ]
+    }
+    // Optionally add TURN here, and also send to clients
 ];
 
 // Connection monitoring
@@ -228,6 +312,9 @@ function handleMessage(clientId, message) {
         case 'register-camera':
             handleRegisterCamera(clientId, message);
             break;
+        case 'unregister-camera':
+            handleUnregisterCamera(clientId, message);
+            break;
         case 'call-request':
             handleCallRequest(clientId, message);
             break;
@@ -287,6 +374,48 @@ function handleRegisterCamera(clientId, message) {
             cameraId: cameraId
         });
     }
+}
+
+function handleUnregisterCamera(clientId, message) {
+    const client = clients.get(clientId);
+    if (!client) return;
+
+    const cameraId = message.cameraId;
+
+    if (!cameraId) {
+        log(`Invalid camera unregistration from ${clientId}: missing cameraId`);
+        return;
+    }
+
+    const camera = cameras.get(cameraId);
+    if (!camera) {
+        log(`Camera ${cameraId} not found for unregistration`);
+        return;
+    }
+
+    // Verify the client owns this camera
+    if (camera.client.id !== clientId) {
+        log(`Client ${clientId} attempted to unregister camera ${cameraId} owned by ${camera.client.id}`);
+        return;
+    }
+
+    // Remove the camera
+    cameras.delete(cameraId);
+    log(`Camera unregistered: ${cameraId} by client ${clientId}`);
+
+    // Clean up ICE candidate tracking
+    iceCandidateCount.forEach((count, sessionKey) => {
+        if (sessionKey.includes(cameraId)) {
+            iceCandidateCount.delete(sessionKey);
+            log(`ICE candidate tracking cleaned up for session: ${sessionKey}`);
+        }
+    });
+
+    // Notify all web clients
+    sendToWebClients({
+        type: 'unregister-camera',
+        cameraId: cameraId
+    });
 }
 
 function handleCallRequest(clientId, message) {

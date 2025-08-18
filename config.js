@@ -3,7 +3,7 @@ const CONFIG = {
     // WebSocket Server Configuration
     WEBSOCKET: {
         // Default to localhost for local development
-        URL: 'ws://192.168.68.67:8080',
+        URL: 'ws://192.168.68.55:8080',
         
         // Alternative URLs for different environments
         // Uncomment the one you want to use:
@@ -25,6 +25,31 @@ const CONFIG = {
         CONNECTION_TIMEOUT: 60000 // 60 seconds
     },
     
+    // ICE servers used for gathering candidates (STUN/TURN)
+    // Add your TURN servers here for better connectivity behind restrictive NATs
+    ICE_SERVERS: [
+        {
+            urls: [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302',
+                'stun:stun2.l.google.com:19302',
+                'stun:stun3.l.google.com:19302',
+                'stun:stun4.l.google.com:19302'
+            ]
+        },
+        // Additional STUN servers to get more server reflexive candidates
+        { urls: 'stun:stun.services.mozilla.com' },
+        { urls: 'stun:stun.stunprotocol.org:3478' }
+
+        // Example TURN configuration (replace with real TURN server and credentials)
+        // Without TURN, you'll only get host and srflx candidates
+        // ,{
+        //     urls: 'turn:your-turn-server:3478',
+        //     username: 'user',
+        //     credential: 'pass'
+        // }
+    ],
+
     // Video Quality Settings
     VIDEO: {
         // Preferred codec order (H.265 first for better compression)
