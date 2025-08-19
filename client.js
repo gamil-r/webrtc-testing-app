@@ -1119,6 +1119,12 @@ class WebRTCSignalingClient {
             servers: iceServers,
             timestamp: new Date().toISOString()
         });
+
+        // Update the ICE servers configuration
+        if (iceServers && iceServers.length > 0) {
+            CONFIG.ICE_SERVERS = iceServers;
+            this.log('ICE servers configuration updated', 'success');
+        }
     }
 
     handleStreamReceived(cameraId, stream) {

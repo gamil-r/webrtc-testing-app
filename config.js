@@ -28,15 +28,12 @@ const CONFIG = {
     // ICE servers used for gathering candidates (STUN/TURN)
     // Add your TURN servers here for better connectivity behind restrictive NATs
     ICE_SERVERS: [
-        {
-            urls: [
-                'stun:stun.l.google.com:19302',
-                'stun:stun1.l.google.com:19302',
-                'stun:stun2.l.google.com:19302',
-                'stun:stun3.l.google.com:19302',
-                'stun:stun4.l.google.com:19302'
-            ]
-        },
+        // Google STUN servers
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
         // Additional STUN servers to get more server reflexive candidates
         { urls: 'stun:stun.services.mozilla.com' },
         { urls: 'stun:stun.stunprotocol.org:3478' }

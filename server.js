@@ -2,94 +2,19 @@ const express = require('express');
 const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
+const CONFIG = require('./config');
 
 // Create Express app
 const app = express();
 
-// Parse raw body for SDP
-app.use('/whep-proxy', express.raw({ type: 'application/sdp', limit: '10mb' }));
-
 // Serve static files (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, '.')));
-
-// WHEP HTTP Proxy endpoint
-app.post('/whep-proxy', async (req, res) => {
-    const targetUrl = req.headers['x-target-url'];
-
-    if (!targetUrl) {
-        return res.status(400).send('Missing X-Target-URL header');
-    }
-
-    log(`WHEP proxy request to: ${targetUrl}`);
-
-    try {
-        // Make the request to the actual WHEP server
-        const fetch = require('node-fetch');
-        const response = await fetch(targetUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/sdp',
-                'Accept': 'application/sdp'
-            },
-            body: req.body
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            log(`WHEP proxy error: ${response.status} - ${errorText}`);
-            return res.status(response.status).send(errorText);
-        }
-
-        // Get the response SDP
-        const responseSdp = await response.text();
-
-        // Forward any location header if present
-        const location = response.headers.get('location');
-        if (location) {
-            res.setHeader('X-WHEP-Location', location);
-        }
-
-        // Send the response SDP back
-        res.setHeader('Content-Type', 'application/sdp');
-        res.send(responseSdp);
-
-        log(`WHEP proxy success - response length: ${responseSdp.length}`);
-
-    } catch (error) {
-        log(`WHEP proxy failed: ${error.message}`);
-        res.status(500).send(`Proxy error: ${error.message}`);
-    }
-});
-
-// WHEP DELETE proxy endpoint
-app.delete('/whep-proxy', async (req, res) => {
-    const targetUrl = req.headers['x-target-url'];
-
-    if (!targetUrl) {
-        return res.status(400).send('Missing X-Target-URL header');
-    }
-
-    log(`WHEP DELETE proxy request to: ${targetUrl}`);
-
-    try {
-        const fetch = require('node-fetch');
-        const response = await fetch(targetUrl, {
-            method: 'DELETE'
-        });
-
-        res.status(response.status).send(response.ok ? 'OK' : 'Failed');
-
-    } catch (error) {
-        log(`WHEP DELETE proxy failed: ${error.message}`);
-        res.status(500).send(`Proxy error: ${error.message}`);
-    }
-});
 
 // Create HTTP server
 const server = http.createServer(app);
 
 // Create WebSocket server with ping/pong configuration
-const wss = new WebSocket.Server({ 
+const wss = new WebSocket.Server({
     server,
     // Add ping/pong configuration for keepalive
     perMessageDeflate: false, // Disable compression for better performance
@@ -102,18 +27,9 @@ const clients = new Map();
 const cameras = new Map();
 const iceCandidateCount = new Map(); // Track ICE candidates per camera
 
-// Default ICE servers (expanded STUN list)
+// Default ICE servers - fallback if config.js doesn't have any
 const defaultIceServers = [
-    {
-        urls: [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-            'stun:stun2.l.google.com:19302',
-            'stun:stun3.l.google.com:19302',
-            'stun:stun4.l.google.com:19302'
-        ]
-    }
-    // Optionally add TURN here, and also send to clients
+    { urls: 'stun:stun.l.google.com:19302' }
 ];
 
 // Connection monitoring
@@ -174,10 +90,10 @@ wss.on('connection', (ws, req) => {
         lastPongTime: Date.now(),
         isAlive: true
     };
-    
+
     clients.set(clientId, clientInfo);
     connectionHealth.set(clientId, Date.now());
-    
+
     log(`Client connected: ${clientId} from ${clientInfo.ip}`);
 
     // Send initial ICE servers
@@ -199,7 +115,7 @@ wss.on('connection', (ws, req) => {
     ws.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-            
+
             // Handle ping/pong messages
             if (message.type === 'ping') {
                 ws.send(JSON.stringify({ type: 'pong', timestamp: message.timestamp }));
@@ -209,7 +125,7 @@ wss.on('connection', (ws, req) => {
                 log(`Ping received from client ${clientId}, sent pong`);
                 return;
             }
-            
+
             if (message.type === 'pong') {
                 clientInfo.lastPongTime = Date.now();
                 clientInfo.isAlive = true;
@@ -217,7 +133,7 @@ wss.on('connection', (ws, req) => {
                 log(`Pong received from client ${clientId}`);
                 return;
             }
-            
+
             handleMessage(clientId, message);
         } catch (error) {
             log(`Error parsing message from ${clientId}: ${error.message}`);
@@ -226,13 +142,13 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', (code, reason) => {
         log(`Client disconnected: ${clientId} (code: ${code}, reason: ${reason})`);
-        
+
         // Remove cameras registered by this client
         cameras.forEach((camera, cameraId) => {
             if (camera.client && camera.client.id === clientId) {
                 cameras.delete(cameraId);
                 log(`Camera unregistered: ${cameraId}`);
-                
+
                 // Clean up ICE candidate tracking
                 iceCandidateCount.forEach((count, sessionKey) => {
                     if (sessionKey.includes(cameraId) || sessionKey.includes(clientId)) {
@@ -240,7 +156,7 @@ wss.on('connection', (ws, req) => {
                         log(`🧊 ICE candidate tracking cleaned up for session: ${sessionKey}`);
                     }
                 });
-                
+
                 // Notify web clients
                 sendToWebClients({
                     type: 'camera-disconnected',
@@ -248,7 +164,7 @@ wss.on('connection', (ws, req) => {
                 });
             }
         });
-        
+
         clients.delete(clientId);
         connectionHealth.delete(clientId);
     });
@@ -265,7 +181,7 @@ const pingInterval = setInterval(() => {
             log(`Terminating connection - no pong received`);
             return ws.terminate();
         }
-        
+
         ws.isAlive = false;
         ws.ping(() => {
             log(`Ping sent to client`);
@@ -341,9 +257,19 @@ function handleIdentify(clientId, message) {
 
     client.type = message.clientType; // 'web' or 'android'
     log(`Client ${clientId} identified as: ${client.type}`);
+
+    // Send ICE servers configuration from config.js to all clients
+    const iceServers = CONFIG.ICE_SERVERS || defaultIceServers;
+    client.ws.send(JSON.stringify({
+        type: 'ice-servers',
+        iceServers: iceServers
+    }));
+
+    log(`Sent ICE servers configuration to ${client.type} client ${clientId}:`, iceServers);
     
     // If this is a web client, send list of registered cameras
     if (client.type === 'web') {
+        // Send list of all registered cameras
         cameras.forEach((camera, cameraId) => {
             client.ws.send(JSON.stringify({
                 type: 'register-camera',
@@ -358,16 +284,16 @@ function handleRegisterCamera(clientId, message) {
     if (!client) return;
 
     const cameraId = message.cameraId;
-    
+
     if (!cameras.has(cameraId)) {
         cameras.set(cameraId, {
             id: cameraId,
             client: client,
             registeredAt: new Date()
         });
-        
+
         log(`Camera registered: ${cameraId} by client ${clientId}`);
-        
+
         // Notify all web clients
         sendToWebClients({
             type: 'register-camera',
@@ -421,14 +347,14 @@ function handleUnregisterCamera(clientId, message) {
 function handleCallRequest(clientId, message) {
     const cameraId = message.cameraId;
     log(`Call request for camera ${cameraId} from client ${clientId}`);
-    
+
     // Forward call request to the camera's Android client
     const success = sendToAndroidClient(cameraId, {
         type: 'call-request',
         cameraId: cameraId,
         fromClient: clientId
     });
-    
+
     if (!success) {
         sendToClient(clientId, {
             type: 'error',
@@ -441,16 +367,16 @@ function handleHangUp(clientId, message) {
     const cameraId = message.cameraId;
     const client = clients.get(clientId);
     const clientType = client ? client.type : 'unknown';
-    
+
     log(`Hang-up request for camera ${cameraId} from ${clientType} client ${clientId}`);
-    
+
     // Forward hang-up request to the camera's Android client
     const success = sendToAndroidClient(cameraId, {
         type: 'hang-up',
         cameraId: cameraId,
         fromClient: clientId
     });
-    
+
     if (success) {
         log(`Hang-up request forwarded to camera ${cameraId}`);
     } else {
@@ -462,9 +388,9 @@ function handleOffer(clientId, message) {
     const cameraId = message.cameraId;
     const client = clients.get(clientId);
     const clientType = client ? client.type : 'unknown';
-    
+
     log(`Offer for camera ${cameraId} from ${clientType} client ${clientId}`);
-    
+
     // Log offer details
     if (message.offer) {
         const offer = message.offer;
@@ -472,7 +398,7 @@ function handleOffer(clientId, message) {
         log(`  → SDP Length: ${offer.sdp ? offer.sdp.length : 0} chars`);
         log(`  → ICE gathering will begin after setting local description`);
     }
-    
+
     // Determine where to forward the offer
     if (client && client.type === 'web') {
         // Web client sending offer to Android client
@@ -502,9 +428,9 @@ function handleAnswer(clientId, message) {
     const cameraId = message.cameraId;
     const client = clients.get(clientId);
     const clientType = client ? client.type : 'unknown';
-    
+
     log(`Answer for camera ${cameraId} from ${clientType} client ${clientId}`);
-    
+
     // Log answer details
     if (message.answer) {
         const answer = message.answer;
@@ -512,7 +438,7 @@ function handleAnswer(clientId, message) {
         log(`  → SDP Length: ${answer.sdp ? answer.sdp.length : 0} chars`);
         log(`  → ICE gathering will continue after setting local description`);
     }
-    
+
     // Determine where to forward the answer
     if (client && client.type === 'web') {
         // Web client sending answer to Android client
@@ -542,32 +468,32 @@ function handleIceCandidate(clientId, message) {
     const cameraId = message.cameraId;
     const client = clients.get(clientId);
     const clientType = client ? client.type : 'unknown';
-    
+
     // Track ICE candidates per camera
     const sessionKey = `${cameraId}_${clientId}`;
     if (!iceCandidateCount.has(sessionKey)) {
         iceCandidateCount.set(sessionKey, 0);
         log(`🧊 ICE gathering started for camera ${cameraId} from ${clientType} client ${clientId}`);
     }
-    
+
     const currentCount = iceCandidateCount.get(sessionKey) + 1;
     iceCandidateCount.set(sessionKey, currentCount);
-    
+
     log(`🧊 ICE candidate #${currentCount} for camera ${cameraId} from ${clientType} client ${clientId}`);
-    
+
     // Log ICE candidate details
     if (message.candidate) {
         const candidate = message.candidate;
         log(`  → Candidate: ${candidate.candidate || 'N/A'}`);
         log(`  → SDP MLine Index: ${candidate.sdpMLineIndex || 'N/A'}`);
         log(`  → SDP MID: ${candidate.sdpMid || 'N/A'}`);
-        
+
         // Extract candidate type from SDP
         const candidateStr = candidate.candidate || '';
         const typeMatch = candidateStr.match(/typ (\w+)/);
         const type = typeMatch ? typeMatch[1] : 'unknown';
         log(`  → Type: ${type}`);
-        
+
         // Extract protocol and address
         const protocolMatch = candidateStr.match(/udp|tcp/i);
         const protocol = protocolMatch ? protocolMatch[0].toUpperCase() : 'unknown';
@@ -579,7 +505,7 @@ function handleIceCandidate(clientId, message) {
         log(`🧊 ICE gathering completed for camera ${cameraId} from ${clientType} client ${clientId}`);
         log(`  → Total ICE candidates collected: ${currentCount - 1}`);
     }
-    
+
     // Determine where to forward the ICE candidate
     if (client && client.type === 'web') {
         // Web client sending ICE candidate to Android client
