@@ -3,7 +3,7 @@ const CONFIG = {
     // WebSocket Server Configuration
     WEBSOCKET: {
         // Default to localhost for local development
-        URL: 'ws://192.168.68.55:8080',
+        URL: 'ws://192.168.68.58:8080',
         
         // Alternative URLs for different environments
         // Uncomment the one you want to use:

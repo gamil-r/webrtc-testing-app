@@ -20,6 +20,9 @@ class WebRTCSignalingClient {
         // Track manual hang-ups to prevent automatic disconnection handling
         this.manualHangups = new Set();
 
+        // Track video timing for freeze detection
+        this.lastVideoTime = new Map(); // Map of cameraId -> last video time
+
         // Connection management - use CONFIG values
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = CONFIG.WEBSOCKET.RECONNECT_ATTEMPTS;
@@ -34,6 +37,7 @@ class WebRTCSignalingClient {
         this.setupGlobalStats();
         this.startGlobalStatsUpdate();
         this.initializeFloatingStats();
+        this.startVideoHealthMonitoring();
 
         // Trickle ICE toggle (checkbox represents NO trickle)
         // Default: unchecked → trickle enabled
@@ -1220,6 +1224,103 @@ class WebRTCSignalingClient {
             video.autoplay = true;
             video.playsinline = true;
             video.muted = true;
+            video.preload = 'auto';
+            video.disablePictureInPicture = true;
+            video.disableRemotePlayback = true;
+
+            // Add event listeners for better error handling and recovery
+            video.addEventListener('error', (e) => {
+                this.log(`Video error for ${cameraId}`, 'error', {
+                    cameraId,
+                    error: e.target.error,
+                    videoReadyState: e.target.readyState,
+                    networkState: e.target.networkState,
+                    timestamp: new Date().toISOString()
+                });
+
+                // Try to recover by reloading the stream
+                setTimeout(() => {
+                    if (this.activeStreams.has(cameraId)) {
+                        this.log(`Attempting to recover video stream for ${cameraId}`, 'info');
+                        video.load();
+                    }
+                }, 2000);
+            });
+
+            video.addEventListener('abort', () => {
+                this.log(`Video aborted for ${cameraId}`, 'warning', { cameraId });
+            });
+
+            video.addEventListener('suspend', () => {
+                this.log(`Video suspended for ${cameraId}`, 'info', { cameraId });
+            });
+
+            video.addEventListener('stalled', () => {
+                this.log(`Video stalled for ${cameraId}`, 'warning', { cameraId });
+            });
+
+            video.addEventListener('waiting', () => {
+                this.log(`Video waiting for data for ${cameraId}`, 'info', { cameraId });
+            });
+
+            video.addEventListener('canplay', () => {
+                this.log(`Video can play for ${cameraId}`, 'success', { cameraId });
+            });
+
+            video.addEventListener('loadedmetadata', () => {
+                this.log(`Video metadata loaded for ${cameraId}`, 'info', {
+                    cameraId,
+                    videoWidth: video.videoWidth,
+                    videoHeight: video.videoHeight,
+                    duration: video.duration
+                });
+            });
+
+            video.addEventListener('ratechange', () => {
+                this.log(`Video playback rate changed for ${cameraId}: ${video.playbackRate}`, 'info', { cameraId });
+            });
+
+            video.addEventListener('volumechange', () => {
+                this.log(`Video volume changed for ${cameraId}: ${video.volume}`, 'info', { cameraId });
+            });
+
+            // Add more diagnostic events for black video issues
+            video.addEventListener('resize', () => {
+                this.log(`Video resized for ${cameraId}`, 'info', {
+                    cameraId,
+                    videoWidth: video.videoWidth,
+                    videoHeight: video.videoHeight,
+                    timestamp: new Date().toISOString()
+                });
+            });
+
+            video.addEventListener('emptied', () => {
+                this.log(`Video emptied for ${cameraId}`, 'warning', { cameraId });
+            });
+
+            video.addEventListener('loadstart', () => {
+                this.log(`Video load started for ${cameraId}`, 'info', { cameraId });
+            });
+
+            video.addEventListener('progress', () => {
+                this.log(`Video progress for ${cameraId}`, 'info', {
+                    cameraId,
+                    buffered: video.buffered.length > 0 ? video.buffered.end(0) : 0,
+                    currentTime: video.currentTime
+                });
+            });
+
+            video.addEventListener('timeupdate', () => {
+                // Only log occasionally to avoid spam
+                if (Math.floor(video.currentTime) % 5 === 0) {
+                    this.log(`Video time update for ${cameraId}`, 'debug', {
+                        cameraId,
+                        currentTime: video.currentTime,
+                        readyState: video.readyState,
+                        networkState: video.networkState
+                    });
+                }
+            });
 
             // Create status indicator (top left)
             const statusOverlay = document.createElement('div');
@@ -1245,7 +1346,20 @@ class WebRTCSignalingClient {
 
         // Set stream
         const video = streamContainer.querySelector('.stream-video');
+
+        // Set the new stream
         video.srcObject = stream;
+
+        // Ensure video starts playing
+        if (video.paused) {
+            video.play().catch(err => {
+                this.log(`Failed to autoplay video for ${cameraId}`, 'warning', {
+                    cameraId,
+                    error: err.message,
+                    timestamp: new Date().toISOString()
+                });
+            });
+        }
 
         // Update status
         const status = streamContainer.querySelector('.stream-status');
@@ -2542,6 +2656,143 @@ class WebRTCSignalingClient {
         if (nackRate === 0) return 'good';
         if (nackRate <= 1) return 'warning';
         return 'error';
+    }
+
+    // Monitor video health and recover from issues
+    startVideoHealthMonitoring() {
+        setInterval(() => {
+            this.streamElements.forEach((streamContainer, cameraId) => {
+                const video = streamContainer.querySelector('.stream-video');
+                if (!video || !this.activeStreams.has(cameraId)) return;
+
+                // Check if video is frozen (not receiving new frames)
+                if (video.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+                    const currentTime = video.currentTime;
+                    const lastTime = this.lastVideoTime.get(cameraId) || 0;
+
+                    if (currentTime === lastTime && !video.paused) {
+                        // Video appears to be frozen
+                        this.log(`Video appears frozen for ${cameraId}, attempting recovery`, 'warning', {
+                            cameraId,
+                            currentTime,
+                            lastTime,
+                            readyState: video.readyState,
+                            networkState: video.networkState,
+                            videoWidth: video.videoWidth,
+                            videoHeight: video.videoHeight,
+                            timestamp: new Date().toISOString()
+                        });
+
+                        // Try multiple recovery strategies
+                        this.recoverVideoStream(cameraId, video);
+                    }
+
+                    this.lastVideoTime.set(cameraId, currentTime);
+                }
+
+                // Check for black video (video dimensions but no visual content)
+                this.checkForBlackVideo(cameraId, video);
+            });
+        }, 2000); // Check every 2 seconds
+    }
+
+    // Enhanced recovery for video streams
+    recoverVideoStream(cameraId, video) {
+        this.log(`Starting video recovery for ${cameraId}`, 'info', { cameraId });
+
+        // Strategy 1: Try seeking slightly forward
+        const currentTime = video.currentTime;
+        try {
+            video.currentTime = currentTime + 0.1;
+        } catch (e) {
+            this.log(`Seek recovery failed for ${cameraId}`, 'warning', { cameraId, error: e.message });
+        }
+
+        // Strategy 2: Force repaint (Chrome specific)
+        setTimeout(() => {
+            if (this.activeStreams.has(cameraId) && video.currentTime === currentTime) {
+                this.log(`Forcing video repaint for ${cameraId}`, 'info', { cameraId });
+                video.style.display = 'none';
+                video.offsetHeight; // Force reflow
+                video.style.display = '';
+
+                // Strategy 3: If still frozen, reload
+                setTimeout(() => {
+                    if (this.activeStreams.has(cameraId) && video.currentTime === currentTime) {
+                        this.log(`Video still frozen for ${cameraId}, reloading stream`, 'warning');
+                        video.load();
+                    }
+                }, 1000);
+            }
+        }, 500);
+    }
+
+    // Check for black video issues (Chrome-specific problem)
+    checkForBlackVideo(cameraId, video) {
+        if (!video.videoWidth || !video.videoHeight) return;
+
+        // Try to detect black video by checking if video is playing but appears black
+        if (!video.paused && video.readyState >= 2 && video.currentTime > 0) {
+            // Check if we can create a canvas to sample pixels (privacy-conscious approach)
+            try {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = 32;
+                canvas.height = 18;
+
+                // Draw a small sample of the video
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                // Get image data for a small sample
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+
+                // Check if most pixels are black (or very dark)
+                let blackPixels = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i];
+                    const g = data[i + 1];
+                    const b = data[i + 2];
+                    const brightness = (r + g + b) / 3;
+                    if (brightness < 10) blackPixels++;
+                }
+
+                const totalPixels = data.length / 4;
+                const blackPercentage = (blackPixels / totalPixels) * 100;
+
+                if (blackPercentage > 90) {
+                    this.log(`Detected mostly black video for ${cameraId} (${blackPercentage.toFixed(1)}% black)`, 'warning', {
+                        cameraId,
+                        blackPercentage,
+                        videoWidth: video.videoWidth,
+                        videoHeight: video.videoHeight
+                    });
+
+                    // Try recovery for black video
+                    this.recoverFromBlackVideo(cameraId, video);
+                }
+
+            } catch (e) {
+                // Canvas sampling failed (probably due to CORS), that's okay
+                this.log(`Cannot sample video pixels for ${cameraId} (CORS restriction)`, 'debug', { cameraId });
+            }
+        }
+    }
+
+    // Specific recovery for black video issues
+    recoverFromBlackVideo(cameraId, video) {
+        this.log(`Attempting black video recovery for ${cameraId}`, 'info', { cameraId });
+
+        // Force video refresh by toggling src
+        const currentSrc = video.srcObject;
+        video.srcObject = null;
+
+        setTimeout(() => {
+            if (this.activeStreams.has(cameraId)) {
+                video.srcObject = currentSrc;
+                this.log(`Re-applied video source for ${cameraId}`, 'info', { cameraId });
+            }
+        }, 100);
     }
 }
 
