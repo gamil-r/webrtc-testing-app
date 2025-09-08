@@ -1274,6 +1274,9 @@ class WebRTCSignalingClient {
                     videoHeight: video.videoHeight,
                     duration: video.duration
                 });
+                if (video.videoWidth &&  video.videoHeight) {
+                    streamContainer.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
+                }
             });
 
             video.addEventListener('ratechange', () => {
@@ -1292,6 +1295,10 @@ class WebRTCSignalingClient {
                     videoHeight: video.videoHeight,
                     timestamp: new Date().toISOString()
                 });
+
+                if (video.videoWidth &&  video.videoHeight) {
+                    streamContainer.style.aspectRatio = `${video.videoWidth}/${video.videoHeight}`;
+                }
             });
 
             video.addEventListener('emptied', () => {
