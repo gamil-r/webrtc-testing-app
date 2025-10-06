@@ -53,14 +53,16 @@ class WebRTCSignalingClient {
         }
 
         // Mode switching
-        this.mode = 'ws'; // 'ws' | 'whep'
+        this.mode = 'ws'; // 'ws' | 'whep' | 'kvs'
         this.whepConnections = new Map(); // Map of whepId -> { pc, endpointUrl, state }
         this.whepUrlCounter = 0;
         const modeWsBtn = document.getElementById('modeWsBtn');
         const modeWhepBtn = document.getElementById('modeWhepBtn');
-        if (modeWsBtn && modeWhepBtn) {
+        const modeKvsBtn = document.getElementById('modeKvsBtn');
+        if (modeWsBtn && modeWhepBtn && modeKvsBtn) {
             modeWsBtn.addEventListener('click', () => this.switchMode('ws'));
             modeWhepBtn.addEventListener('click', () => this.switchMode('whep'));
+            modeKvsBtn.addEventListener('click', () => this.switchMode('kvs'));
         }
         // Initialize WHEP URL list
         const addWhepUrlBtn = document.getElementById('addWhepUrlBtn');
@@ -68,23 +70,464 @@ class WebRTCSignalingClient {
 
         // Initialize with one URL entry
         this.initializeWhepUrls();
+
+        // KVS UI bindings
+        this.kvs = {
+            signalingClient: null,
+            pc: null,
+            state: 'disconnected',
+            cameraId: null,
+            keepaliveInterval: null
+        };
+        const kvsConnectBtn = document.getElementById('kvsConnectBtn');
+        const kvsDisconnectBtn = document.getElementById('kvsDisconnectBtn');
+        if (kvsConnectBtn) kvsConnectBtn.addEventListener('click', () => this.startKvs());
+        if (kvsDisconnectBtn) kvsDisconnectBtn.addEventListener('click', () => this.stopKvs());
     }
 
     switchMode(mode) {
         this.mode = mode;
         const wsSection = document.getElementById('wsSection');
         const whepSection = document.getElementById('whepSection');
+        const kvsSection = document.getElementById('kvsSection');
         const modeWsBtn = document.getElementById('modeWsBtn');
         const modeWhepBtn = document.getElementById('modeWhepBtn');
-        if (wsSection && whepSection) {
+        const modeKvsBtn = document.getElementById('modeKvsBtn');
+        if (wsSection && whepSection && kvsSection) {
             wsSection.style.display = mode === 'ws' ? 'block' : 'none';
             whepSection.style.display = mode === 'whep' ? 'block' : 'none';
+            kvsSection.style.display = mode === 'kvs' ? 'block' : 'none';
         }
-        if (modeWsBtn && modeWhepBtn) {
+        if (modeWsBtn && modeWhepBtn && modeKvsBtn) {
             modeWsBtn.classList.toggle('active', mode === 'ws');
             modeWhepBtn.classList.toggle('active', mode === 'whep');
+            modeKvsBtn.classList.toggle('active', mode === 'kvs');
         }
         this.log(`Switched mode to ${mode.toUpperCase()}`, 'info');
+    }
+
+    // ======================
+    // KVS (AWS SDK)
+    // ======================
+    async startKvs() {
+        try {
+            if (this.kvs.state !== 'disconnected') {
+                this.log('KVS already connecting/connected', 'warning');
+                return;
+            }
+
+            // Read inputs
+            const cameraId = (document.getElementById('kvsCameraId')?.value || 'kvs_camera').trim();
+            const channelArn = (document.getElementById('kvsChannelArn')?.value || '').trim();
+            const clientId = cameraId || `web_${Math.random().toString(36).slice(2, 8)}`;
+            const accessKeyId = (document.getElementById('kvsAccessKeyId')?.value || '').trim();
+            const secretAccessKey = (document.getElementById('kvsSecretAccessKey')?.value || '').trim();
+            const sessionToken = (document.getElementById('kvsSessionToken')?.value || '').trim();
+
+            const connectBtn = document.getElementById('kvsConnectBtn');
+            const disconnectBtn = document.getElementById('kvsDisconnectBtn');
+            if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = 'Connecting...'; }
+            if (disconnectBtn) { disconnectBtn.style.display = 'inline-block'; disconnectBtn.disabled = true; }
+
+            this.kvs.cameraId = cameraId;
+            this.kvs.state = 'connecting';
+
+            if (!channelArn || !clientId) {
+                throw new Error('Channel ARN and Client ID are required');
+            }
+
+            // Extract region from ARN: arn:aws:kinesisvideo:REGION:...
+            const region = this.extractRegionFromArn(channelArn);
+            if (!region) {
+                throw new Error('Invalid Channel ARN format. Expected: arn:aws:kinesisvideo:REGION:ACCOUNT:channel/...');
+            }
+
+            this.log('Setting up KVS WebRTC connection', 'info', { region, clientId, cameraId });
+
+            // Setup AWS credentials
+            let credentials;
+            if (accessKeyId && secretAccessKey) {
+                credentials = {
+                    accessKeyId,
+                    secretAccessKey,
+                    sessionToken: sessionToken || undefined
+                };
+            } else {
+                // Use server-side credentials via fetch proxy
+                credentials = await this.getKvsCredentialsFromServer(region, channelArn, clientId);
+            }
+
+            // Use AWS SDK SignalingClient
+            const kinesisVideoClient = new window.AWS.KinesisVideo({
+                region,
+                credentials,
+                correctClockSkew: true
+            });
+
+            // Get signaling channel endpoints
+            this.log('Getting signaling channel endpoints', 'info');
+            const getSignalingChannelEndpointResponse = await kinesisVideoClient
+                .getSignalingChannelEndpoint({
+                    ChannelARN: channelArn,
+                    SingleMasterChannelEndpointConfiguration: {
+                        Protocols: ['WSS', 'HTTPS'],
+                        Role: 'VIEWER'
+                    }
+                })
+                .promise();
+
+            const endpointsByProtocol = getSignalingChannelEndpointResponse.ResourceEndpointList.reduce((endpoints, endpoint) => {
+                endpoints[endpoint.Protocol] = endpoint.ResourceEndpoint;
+                return endpoints;
+            }, {});
+
+            this.log('Got KVS endpoints', 'info', { wss: endpointsByProtocol.WSS });
+
+            // Get ICE server configuration from KVS
+            this.log('Getting TURN server configuration from KVS', 'info');
+            const kinesisVideoSignalingChannelsClient = new window.AWS.KinesisVideoSignalingChannels({
+                region,
+                credentials,
+                endpoint: endpointsByProtocol.HTTPS,
+                correctClockSkew: true
+            });
+
+            const getIceServerConfigResponse = await kinesisVideoSignalingChannelsClient
+                .getIceServerConfig({
+                    ChannelARN: channelArn
+                })
+                .promise();
+
+            const iceServers = [];
+            iceServers.push({ urls: `stun:stun.kinesisvideo.${region}.amazonaws.com:443` });
+            
+            if (getIceServerConfigResponse.IceServerList) {
+                getIceServerConfigResponse.IceServerList.forEach(iceServer => {
+                    iceServer.Uris.forEach(uri => {
+                        iceServers.push({
+                            urls: uri,
+                            username: iceServer.Username,
+                            credential: iceServer.Password
+                        });
+                    });
+                });
+            }
+
+            this.log('Got ICE servers from KVS', 'success', { 
+                count: iceServers.length,
+                types: iceServers.map(s => s.urls.split(':')[0]).join(', ')
+            });
+
+            // Create Signaling Client
+            const signalingClient = new window.KVSWebRTC.SignalingClient({
+                channelARN: channelArn,
+                channelEndpoint: endpointsByProtocol.WSS,
+                clientId: clientId,
+                role: 'VIEWER',
+                region: region,
+                credentials: credentials,
+                systemClockOffset: kinesisVideoClient.config.systemClockOffset
+            });
+
+            this.kvs.signalingClient = signalingClient;
+
+            // Create peer connection with ICE servers
+            const configuration = {
+                iceServers: iceServers,
+                iceTransportPolicy: 'all'
+            };
+            const peerConnection = new RTCPeerConnection(configuration);
+            this.kvs.pc = peerConnection;
+
+            // Add transceiver for receiving video
+            peerConnection.addTransceiver('video', { direction: 'recvonly' });
+            peerConnection.addTransceiver('audio', { direction: 'recvonly' });
+
+            // Handle incoming tracks
+            peerConnection.ontrack = (event) => {
+                this.log('KVS track received', 'success', { kind: event.track.kind });
+                if (event.streams && event.streams[0]) {
+                    this.handleStreamReceived(cameraId, event.streams[0]);
+                    this.startStatsCollection(cameraId);
+                }
+            };
+
+            // Queue ICE candidates until we have remote description
+            let candidatesSentCount = 0;
+            let pendingIceCandidates = [];
+            let canSendCandidates = false;
+            
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    const candidateStr = event.candidate.candidate || '';
+                    const typeMatch = candidateStr.match(/typ (\w+)/);
+                    const candidateType = typeMatch ? typeMatch[1] : 'unknown';
+                    
+                    if (canSendCandidates) {
+                        // Remote description is set, send immediately
+                        candidatesSentCount++;
+                        this.log(`➡️ Sending ICE candidate #${candidatesSentCount} to master (${candidateType})`, 'info', {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex,
+                            type: candidateType
+                        });
+                        signalingClient.sendIceCandidate(event.candidate);
+                    } else {
+                        // Queue until we get remote description
+                        pendingIceCandidates.push(event.candidate);
+                        this.log(`Queuing ICE candidate (${candidateType}) - waiting for remote description`, 'info');
+                    }
+                } else {
+                    this.log(`ICE candidate gathering complete - sent ${candidatesSentCount} candidates, ${pendingIceCandidates.length} queued`, 'success');
+                }
+            };
+
+            // Handle signaling client events
+            signalingClient.on('open', async () => {
+                this.log('KVS SignalingClient connected', 'success');
+                this.kvs.state = 'connected';
+                
+                // Update UI - show disconnect button
+                if (connectBtn) { connectBtn.style.display = 'none'; }
+                if (disconnectBtn) { 
+                    disconnectBtn.style.display = 'inline-block';
+                    disconnectBtn.disabled = false;
+                }
+                
+                // Start keepalive to prevent connection from closing
+                this.startKvsKeepalive(signalingClient);
+                
+                // Create and send offer once connection is open
+                try {
+                    this.log('Creating SDP offer', 'info');
+                    const offer = await peerConnection.createOffer({
+                        offerToReceiveVideo: true,
+                        offerToReceiveAudio: true
+                    });
+                    await peerConnection.setLocalDescription(offer);
+                    
+                    this.log('Sending SDP offer to master', 'info', { 
+                        type: offer.type,
+                        sdpLength: offer.sdp?.length || 0,
+                        sdpPreview: offer.sdp?.substring(0, 100) + '...'
+                    });
+                    signalingClient.sendSdpOffer(peerConnection.localDescription);
+                } catch (err) {
+                    this.log('Failed to create/send offer', 'error', { error: err.message });
+                }
+            });
+
+            signalingClient.on('sdpAnswer', async (answer, remoteClientId) => {
+                this.log('Received SDP answer from master', 'success', { 
+                    remoteClientId,
+                    type: answer.type,
+                    sdpLength: answer.sdp?.length || 0,
+                    sdpPreview: answer.sdp?.substring(0, 100) + '...'
+                });
+                await peerConnection.setRemoteDescription(answer);
+                
+                // Now we can send queued ICE candidates
+                canSendCandidates = true;
+                if (pendingIceCandidates.length > 0) {
+                    this.log(`Sending ${pendingIceCandidates.length} queued ICE candidates`, 'info');
+                    pendingIceCandidates.forEach((candidate) => {
+                        candidatesSentCount++;
+                        const candidateStr = candidate.candidate || '';
+                        const typeMatch = candidateStr.match(/typ (\w+)/);
+                        const candidateType = typeMatch ? typeMatch[1] : 'unknown';
+                        
+                        this.log(`➡️ Sending queued ICE candidate #${candidatesSentCount} to master (${candidateType})`, 'info', {
+                            candidate: candidate.candidate,
+                            sdpMid: candidate.sdpMid,
+                            sdpMLineIndex: candidate.sdpMLineIndex,
+                            type: candidateType
+                        });
+                        signalingClient.sendIceCandidate(candidate);
+                    });
+                    pendingIceCandidates = [];
+                }
+            });
+
+            let candidatesReceivedCount = 0;
+            signalingClient.on('iceCandidate', async (candidate, remoteClientId) => {
+                candidatesReceivedCount++;
+                const candidateStr = candidate.candidate || '';
+                const typeMatch = candidateStr.match(/typ (\w+)/);
+                const candidateType = typeMatch ? typeMatch[1] : 'unknown';
+                
+                this.log(`⬅️ Received ICE candidate #${candidatesReceivedCount} from master (${candidateType})`, 'success', {
+                    remoteClientId,
+                    candidate: candidate.candidate,
+                    sdpMid: candidate.sdpMid,
+                    sdpMLineIndex: candidate.sdpMLineIndex,
+                    type: candidateType
+                });
+                
+                try {
+                    await peerConnection.addIceCandidate(candidate);
+                    this.log(`✅ Added remote ICE candidate #${candidatesReceivedCount}`, 'info');
+                } catch (err) {
+                    this.log(`❌ Failed to add remote ICE candidate #${candidatesReceivedCount}`, 'error', { error: err.message });
+                }
+            });
+
+            signalingClient.on('close', () => {
+                this.log('⚠️ KVS SignalingClient closed by AWS (idle timeout)', 'warning');
+                this.stopKvsKeepalive();
+                
+                // Clear the signaling client reference but keep peer connection alive
+                this.kvs.signalingClient = null;
+                
+                // The peer connection should continue independently
+                // Video will keep playing as long as peerConnection state is 'connected'
+                const pcState = this.kvs.pc?.connectionState;
+                const iceState = this.kvs.pc?.iceConnectionState;
+                
+                this.log('Peer connection status after signaling close', 'info', {
+                    peerConnectionState: pcState,
+                    iceConnectionState: iceState,
+                    hasActiveStream: this.activeStreams.has(this.kvs.cameraId)
+                });
+                
+                // If peer connection is still good, video continues
+                if (pcState === 'connected' || iceState === 'connected' || iceState === 'completed') {
+                    this.log('✅ Video stream continues (peer-to-peer connection active)', 'success');
+                } else {
+                    this.log('❌ Peer connection also failed - cleaning up', 'error');
+                    // Only clean up if peer connection is also dead
+                    if (this.kvs.state !== 'disconnected') {
+                        this.stopKvs();
+                    }
+                }
+            });
+
+            signalingClient.on('error', (error) => {
+                this.log('KVS SignalingClient error', 'error', { error: error?.message || error || 'Unknown error' });
+            });
+            
+            // Monitor peer connection state
+            peerConnection.onconnectionstatechange = () => {
+                const state = peerConnection.connectionState;
+                this.log(`KVS peer connection state: ${state}`, 'info');
+                
+                if (state === 'failed' || state === 'disconnected') {
+                    this.log('KVS peer connection lost', 'error');
+                    this.stopKvs();
+                }
+            };
+
+            // Open connection (offer will be sent in 'open' event)
+            this.log('Opening KVS SignalingClient connection', 'info');
+            signalingClient.open();
+
+        } catch (err) {
+            this.log('KVS start failed', 'error', { error: err.message, stack: err.stack });
+            const connectBtn = document.getElementById('kvsConnectBtn');
+            const disconnectBtn = document.getElementById('kvsDisconnectBtn');
+            if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = 'Connect'; }
+            if (disconnectBtn) { disconnectBtn.style.display = 'none'; }
+            this.kvs.state = 'disconnected';
+        }
+    }
+
+    async getKvsCredentialsFromServer(region, channelArn, clientId) {
+        // This uses the server to get presigned credentials
+        const resp = await fetch('/kvs/presign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ region, channelArn, role: 'VIEWER', clientId, expiresSeconds: 300 })
+        });
+        if (!resp.ok) throw new Error(`Server credentials failed: ${resp.status}`);
+        const data = await resp.json();
+        // Server should return credentials object
+        return data.credentials || null;
+    }
+
+    startKvsKeepalive(signalingClient) {
+        // Stop any existing keepalive
+        this.stopKvsKeepalive();
+        
+        // The AWS SDK should handle keepalive internally
+        // But we'll monitor the connection health
+        this.kvs.keepaliveInterval = setInterval(() => {
+            if (this.kvs.state === 'connected') {
+                const pcState = this.kvs.pc?.connectionState;
+                const iceState = this.kvs.pc?.iceConnectionState;
+                this.log('KVS connection health', 'info', { 
+                    signalingOpen: !!this.kvs.signalingClient,
+                    peerConnectionState: pcState,
+                    iceConnectionState: iceState
+                });
+            }
+        }, 30000); // Every 30 seconds
+    }
+
+    stopKvsKeepalive() {
+        if (this.kvs.keepaliveInterval) {
+            clearInterval(this.kvs.keepaliveInterval);
+            this.kvs.keepaliveInterval = null;
+        }
+    }
+
+    async stopKvs() {
+        try {
+            this.log('Stopping KVS connection', 'info');
+            
+            // Stop keepalive first
+            this.stopKvsKeepalive();
+            
+            // Mark as disconnected first to prevent 'close' event from retriggering
+            this.kvs.state = 'disconnected';
+            
+            if (this.kvs.signalingClient) {
+                try { this.kvs.signalingClient.close(); } catch {}
+                this.kvs.signalingClient = null;
+            }
+            if (this.kvs.pc) {
+                this.kvs.pc.close();
+                this.kvs.pc = null;
+            }
+            
+            // Update UI - show connect button
+            const disconnectBtn = document.getElementById('kvsDisconnectBtn');
+            const connectBtn = document.getElementById('kvsConnectBtn');
+            if (disconnectBtn) { disconnectBtn.style.display = 'none'; }
+            if (connectBtn) { 
+                connectBtn.style.display = 'inline-block';
+                connectBtn.disabled = false; 
+                connectBtn.textContent = 'Connect'; 
+            }
+            
+            // Stop stats for this camera id
+            if (this.kvs.cameraId) {
+                this.stopStatsCollection(this.kvs.cameraId);
+            }
+            
+            // Remove active stream if exists
+            if (this.kvs.cameraId && this.activeStreams.has(this.kvs.cameraId)) {
+                this.handleStreamEnded(this.kvs.cameraId);
+            }
+            
+            this.log('KVS disconnected', 'info');
+        } catch (e) {
+            this.log('KVS stop error', 'error', { error: e.message });
+        }
+    }
+
+    safeHost(url) {
+        try { return new URL(url.replace('wss://','https://')).host; } catch { return '?'; }
+    }
+
+    extractRegionFromArn(arn) {
+        // ARN format: arn:aws:kinesisvideo:REGION:ACCOUNT:channel/NAME/TIMESTAMP
+        // or: arn:aws:kinesisvideo:REGION:ACCOUNT:channel/NAME
+        if (!arn) return null;
+        const parts = arn.split(':');
+        if (parts.length >= 4 && parts[0] === 'arn' && parts[1] === 'aws' && parts[2] === 'kinesisvideo') {
+            return parts[3]; // The region is the 4th part (index 3)
+        }
+        return null;
     }
 
     initializeWhepUrls() {
@@ -1340,9 +1783,10 @@ class WebRTCSignalingClient {
             // Create camera label (bottom right)
             const streamInfo = document.createElement('div');
             streamInfo.className = 'stream-info';
-            // Check if it's a WHEP connection
+            // Check connection type
             const isWhepStream = this.whepConnections.has(cameraId);
-            streamInfo.textContent = isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`;
+            const isKvsStream = this.kvs.cameraId === cameraId;
+            streamInfo.textContent = isKvsStream ? `KVS ${cameraId}` : (isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`);
 
             streamContainer.appendChild(video);
             streamContainer.appendChild(statusOverlay);
@@ -1862,13 +2306,16 @@ class WebRTCSignalingClient {
     }
 
     async collectStats(cameraId) {
-        // Check both regular peer connections and WHEP connections
+        // Check regular peer connections, WHEP connections, and KVS connections
         let peerConnection = this.peerConnections.get(cameraId);
         if (!peerConnection) {
             // Check if it's a WHEP connection
             const whepConnection = this.whepConnections.get(cameraId);
             if (whepConnection && whepConnection.pc) {
                 peerConnection = whepConnection.pc;
+            } else if (this.kvs.cameraId === cameraId && this.kvs.pc) {
+                // Check if it's a KVS connection
+                peerConnection = this.kvs.pc;
             } else {
                 return;
             }
@@ -2259,9 +2706,10 @@ class WebRTCSignalingClient {
         this.activeStreams.forEach(cameraId => {
             const stats = this.streamStats.get(cameraId);
 
-            // Check if it's a regular camera or WHEP connection
+            // Check if it's a regular camera, WHEP connection, or KVS connection
             let camera = this.cameras.get(cameraId);
             let isWhep = false;
+            let isKvs = false;
 
             if (!camera) {
                 // Check if it's a WHEP connection
@@ -2275,6 +2723,15 @@ class WebRTCSignalingClient {
                         streaming: true
                     };
                     isWhep = true;
+                } else if (this.kvs.cameraId === cameraId && this.kvs.state === 'connected') {
+                    // Create a camera-like object for KVS
+                    camera = {
+                        id: cameraId,
+                        streamId: this.streamElements.get(cameraId)?.querySelector('video')?.srcObject?.id || 'KVS',
+                        connected: true,
+                        streaming: true
+                    };
+                    isKvs = true;
                 }
             }
 
@@ -2291,10 +2748,12 @@ class WebRTCSignalingClient {
             statusDiv.className = 'floating-stats-camera-status';
 
             const titleContainer = document.createElement('div');
+            const streamType = isKvs ? 'AWS KVS' : (isWhep ? 'WHEP' : 'WebSocket');
+            const streamLabel = isKvs ? 'KVS Viewer' : (isWhep ? 'WHEP' : 'Camera');
             titleContainer.innerHTML = `
-                <div style="font-size: 14px; font-weight: bold;">${isWhep ? 'WHEP Stream' : 'Video Stream'}</div>
+                <div style="font-size: 14px; font-weight: bold;">${streamType} Stream</div>
                 <div style="font-size: 11px; color: #6c757d; margin-top: 2px;">
-                    ${isWhep ? 'WHEP' : 'Camera'}: ${cameraId} | Stream: ${camera.streamId ? camera.streamId.substring(0, 8) + '...' : 'N/A'}
+                    ${streamLabel}: ${cameraId} | Stream: ${camera.streamId ? camera.streamId.substring(0, 8) + '...' : 'N/A'}
                 </div>
             `;
 

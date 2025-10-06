@@ -3,12 +3,159 @@ const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
 const CONFIG = require('./config');
+const crypto = require('crypto');
 
 // Create Express app
 const app = express();
 
 // Serve static files (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, '.')));
+app.use(express.json({ limit: '1mb' }));
+
+// Simple helper to create SigV4 presigned KVS WSS URL using provided credentials or IAM role on server
+// This endpoint mirrors the Kotlin logic in KvsSignaler.kt (GetSignalingChannelEndpoint + presign)
+app.post('/kvs/presign', async (req, res) => {
+    try {
+        const { region, channelArn, clientId, expiresSeconds = 300, credentials } = req.body || {};
+        const role = 'VIEWER';
+        if (!region || !channelArn || !clientId) {
+            return res.status(400).json({ error: 'Missing required fields: region, channelArn, clientId' });
+        }
+
+        // 1) Discover WSS endpoint
+        const endpoint = await getKvsSignalingEndpoint({ region, channelArn, role, credentials });
+        if (!endpoint) return res.status(500).json({ error: 'Failed to get WSS endpoint' });
+
+        // 2) Presign WSS URL
+        const url = presignKvsWss({ endpoint, region, channelArn, role, clientId, expiresSeconds, credentials });
+        return res.json({ url });
+    } catch (e) {
+        return res.status(500).json({ error: e.message || 'Unknown error' });
+    }
+});
+
+async function getKvsSignalingEndpoint({ region, channelArn, role, credentials }) {
+    const host = `kinesisvideo.${region}.amazonaws.com`;
+    const url = `https://${host}/getSignalingChannelEndpoint`;
+    const body = JSON.stringify({
+        ChannelARN: channelArn,
+        SingleMasterChannelEndpointConfiguration: { Protocols: ['WSS','HTTPS'], Role: role }
+    });
+    const amzTarget = 'KinesisVideo_20170930.GetSignalingChannelEndpoint';
+    const contentType = 'application/x-amz-json-1.1';
+    const amzDate = toAmzDate(new Date());
+    const dateStamp = toDateStamp(new Date());
+    const payloadHash = sha256Hex(Buffer.from(body));
+    const headers = {
+        'content-type': contentType,
+        'host': host,
+        'x-amz-content-sha256': payloadHash,
+        'x-amz-date': amzDate,
+        'x-amz-target': amzTarget
+    };
+    if (credentials && credentials.sessionToken) headers['x-amz-security-token'] = credentials.sessionToken;
+
+    const canonicalRequest = [
+        'POST',
+        '/getSignalingChannelEndpoint',
+        '',
+        Object.keys(headers).sort().map(k => `${k}:${headers[k]}`).join('\n') + '\n',
+        Object.keys(headers).sort().join(';'),
+        payloadHash
+    ].join('\n');
+    const stringToSignStr = stringToSign(amzDate, dateStamp, region, 'kinesisvideo', canonicalRequest);
+    const signingKey = getSigningKey(dateStamp, region, 'kinesisvideo', credentials?.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY);
+    const signature = hmacHex(signingKey, stringToSignStr);
+    const authorization = `AWS4-HMAC-SHA256 Credential=${(credentials?.accessKeyId || process.env.AWS_ACCESS_KEY_ID)}/${credentialScope(dateStamp, region, 'kinesisvideo')}, SignedHeaders=${Object.keys(headers).sort().join(';')}, Signature=${signature}`;
+
+    const fetch = require('node-fetch');
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': contentType,
+            'Host': host,
+            'X-Amz-Content-Sha256': payloadHash,
+            'X-Amz-Date': amzDate,
+            ...(credentials && credentials.sessionToken ? { 'X-Amz-Security-Token': credentials.sessionToken } : {}),
+            'X-Amz-Target': amzTarget,
+            'Authorization': authorization
+        },
+        body
+    });
+    if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`getSignalingChannelEndpoint failed: ${resp.status} ${resp.statusText} - ${text}`);
+    }
+    const json = await resp.json();
+    const list = json.ResourceEndpointList || [];
+    const wss = list.find(e => e.Protocol === 'WSS');
+    return wss && wss.ResourceEndpoint;
+}
+
+// joinStorageSession removed for viewer-only mode
+
+function presignKvsWss({ endpoint, region, channelArn, role, clientId, expiresSeconds, credentials }) {
+    // endpoint may be wss://.. or https://.., we need host only
+    const host = endpoint.replace(/^wss:\/\//, '').replace(/^https:\/\//, '').split('/')[0].split(':')[0];
+    const amzDate = toAmzDate(new Date());
+    const dateStamp = toDateStamp(new Date());
+    const query = new URLSearchParams();
+    query.set('X-Amz-ChannelARN', channelArn);
+    query.set('X-Amz-ClientId', clientId);
+    query.set('X-Amz-Role', role);
+    query.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256');
+    query.set('X-Amz-Credential', `${credentials?.accessKeyId || process.env.AWS_ACCESS_KEY_ID}/${credentialScope(dateStamp, region, 'kinesisvideo')}`);
+    query.set('X-Amz-Date', amzDate);
+    query.set('X-Amz-Expires', String(expiresSeconds || 300));
+    query.set('X-Amz-SignedHeaders', 'host');
+    if (credentials?.sessionToken || process.env.AWS_SESSION_TOKEN) query.set('X-Amz-Security-Token', credentials?.sessionToken || process.env.AWS_SESSION_TOKEN);
+
+    const canonicalQuery = Array.from(query.keys()).sort().map(k => `${encodeURIComponent(k)}=${encodeURIComponent(query.get(k))}`).join('&');
+    const canonicalHeaders = `host:${host}\n`;
+    const signedHeaders = 'host';
+    const payloadHash = sha256Hex(Buffer.alloc(0));
+    const canonicalRequest = ['GET', '/', canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+    const stringToSignStr = stringToSign(amzDate, dateStamp, region, 'kinesisvideo', canonicalRequest);
+    const signingKey = getSigningKey(dateStamp, region, 'kinesisvideo', credentials?.secretAccessKey || process.env.AWS_SECRET_ACCESS_KEY);
+    const signature = hmacHex(signingKey, stringToSignStr);
+    const finalUrl = `wss://${host}/?${canonicalQuery}&X-Amz-Signature=${signature}`;
+    return finalUrl;
+}
+
+function toAmzDate(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const yyyy = date.getUTCFullYear();
+    const MM = pad(date.getUTCMonth() + 1);
+    const dd = pad(date.getUTCDate());
+    const HH = pad(date.getUTCHours());
+    const mm = pad(date.getUTCMinutes());
+    const ss = pad(date.getUTCSeconds());
+    return `${yyyy}${MM}${dd}T${HH}${mm}${ss}Z`;
+}
+function toDateStamp(date) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const yyyy = date.getUTCFullYear();
+    const MM = pad(date.getUTCMonth() + 1);
+    const dd = pad(date.getUTCDate());
+    return `${yyyy}${MM}${dd}`;
+}
+function credentialScope(date, region, service) {
+    return `${date}/${region}/${service}/aws4_request`;
+}
+function stringToSign(amzDate, date, region, service, canonicalRequest) {
+    const crHash = sha256Hex(Buffer.from(canonicalRequest));
+    return ['AWS4-HMAC-SHA256', amzDate, credentialScope(date, region, service), crHash].join('\n');
+}
+function getSigningKey(date, region, service, secretKey) {
+    const kSecret = Buffer.from('AWS4' + (secretKey || ''), 'utf8');
+    const kDate = hmac(kSecret, date);
+    const kRegion = hmac(kDate, region);
+    const kService = hmac(kRegion, service);
+    return hmac(kService, 'aws4_request');
+}
+function hmac(key, data) { return crypto.createHmac('sha256', key).update(data, 'utf8').digest(); }
+function hmacHex(key, data) { return hmac(key, data).toString('hex'); }
+function sha256Hex(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
 // Create HTTP server
 const server = http.createServer(app);

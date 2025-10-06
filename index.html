@@ -926,6 +926,7 @@
                 <div class="tab-bar">
                     <button id="modeWsBtn" class="tab active">WebSocket</button>
                     <button id="modeWhepBtn" class="tab">WHEP</button>
+                    <button id="modeKvsBtn" class="tab">AWS KVS</button>
                 </div>
                 
                 <!-- WebSocket Mode Section -->
@@ -1002,6 +1003,62 @@
                                     <strong>HTTP Proxy:</strong> When enabled, requests go through server → WHEP endpoint
                                 </div>
                             </div>
+                </div>
+                
+                <!-- KVS Mode Section -->
+                <div id="kvsSection" style="display:none;">
+                    <div class="whep-config" style="margin-bottom: 16px;">
+                        <div class="whep-header">
+                            <label class="whep-label">AWS Kinesis Video Streams (Signaling)</label>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <label style="font-size: 0.85rem; color: #4a5568; font-weight: 600;">Camera ID</label>
+                                <input id="kvsCameraId" type="text" placeholder="e.g., camera-001" style="padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;" />
+                                <small style="font-size: 0.75rem; color: #718096;">Used as Viewer Client ID to identify yourself to the Master</small>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 4px;">
+                                <label style="font-size: 0.85rem; color: #4a5568; font-weight: 600;">Channel ARN</label>
+                                <input id="kvsChannelArn" type="text" placeholder="arn:aws:kinesisvideo:us-east-1:123456789012:channel/..." style="padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;" />
+                                <small style="font-size: 0.75rem; color: #718096;">Region will be extracted from the ARN automatically</small>
+                            </div>
+                            <details>
+                                <summary style="cursor:pointer; color:#4a5568; font-weight: 600; font-size: 0.85rem; padding: 8px 0;">AWS Credentials (Optional)</summary>
+                                <div style="display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 8px;">
+                                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                                        <label style="font-size: 0.85rem; color: #4a5568; font-weight: 600;">Access Key ID</label>
+                                        <input id="kvsAccessKeyId" type="text" placeholder="AKIAIOSFODNN7EXAMPLE" style="padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;" />
+                                    </div>
+                                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                                        <label style="font-size: 0.85rem; color: #4a5568; font-weight: 600;">Secret Access Key</label>
+                                        <input id="kvsSecretAccessKey" type="password" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" style="padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;" />
+                                    </div>
+                                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                                        <label style="font-size: 0.85rem; color: #4a5568; font-weight: 600;">Session Token (Optional)</label>
+                                        <input id="kvsSessionToken" type="text" placeholder="Session token if using temporary credentials" style="padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem;" />
+                                    </div>
+                                </div>
+                            </details>
+                            <div class="button-group" style="display:flex; gap:8px;">
+                                <button id="kvsConnectBtn" class="btn btn-primary">Connect</button>
+                                <button id="kvsDisconnectBtn" class="btn btn-danger" style="display:none;">Disconnect</button>
+                            </div>
+                        </div>
+                        <div style="margin-top: 12px; padding: 10px; background: rgba(66, 153, 225, 0.1); border-radius: 8px; font-size: 0.8rem; color: #2c5282;">
+                            <strong>Note:</strong> Provide AWS credentials above or configure them on the server (IAM role or environment variables).
+                        </div>
+                    </div>
+                    <div class="button-legend">
+                        <div class="legend-title">KVS Mode</div>
+                        <div class="legend-item">
+                            <span class="legend-color call"></span>
+                            <span class="legend-text">Connect - Resolve WSS (presigned or credentials), get ICE, send offer via KVS</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color hangup"></span>
+                            <span class="legend-text">Disconnect - Close KVS socket and peer connection</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1187,6 +1244,12 @@
         });
     </script>
 
+    <!-- AWS SDK v2 (for KinesisVideo client) -->
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1589.0.min.js"></script>
+    
+    <!-- AWS SDK for KVS WebRTC -->
+    <script src="https://unpkg.com/amazon-kinesis-video-streams-webrtc@2.0.0/dist/kvs-webrtc.min.js"></script>
+    
     <!-- Configuration and Client Scripts -->
     <script src="config.js"></script>
     <script src="client.js"></script>
