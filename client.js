@@ -53,23 +53,32 @@ class WebRTCSignalingClient {
         }
 
         // Mode switching
-        this.mode = 'ws'; // 'ws' | 'whep' | 'kvs'
+        this.mode = 'ws'; // 'ws' | 'whep' | 'whip' | 'kvs'
         this.whepConnections = new Map(); // Map of whepId -> { pc, endpointUrl, state }
         this.whepUrlCounter = 0;
+        this.whipConnections = new Map(); // Map of whipId -> { pc, endpointUrl, state, pendingAnswerCallback }
+        this.whipUrlCounter = 0;
         const modeWsBtn = document.getElementById('modeWsBtn');
         const modeWhepBtn = document.getElementById('modeWhepBtn');
+        const modeWhipBtn = document.getElementById('modeWhipBtn');
         const modeKvsBtn = document.getElementById('modeKvsBtn');
-        if (modeWsBtn && modeWhepBtn && modeKvsBtn) {
+        if (modeWsBtn && modeWhepBtn && modeWhipBtn && modeKvsBtn) {
             modeWsBtn.addEventListener('click', () => this.switchMode('ws'));
             modeWhepBtn.addEventListener('click', () => this.switchMode('whep'));
+            modeWhipBtn.addEventListener('click', () => this.switchMode('whip'));
             modeKvsBtn.addEventListener('click', () => this.switchMode('kvs'));
         }
         // Initialize WHEP URL list
         const addWhepUrlBtn = document.getElementById('addWhepUrlBtn');
         if (addWhepUrlBtn) addWhepUrlBtn.addEventListener('click', () => this.addWhepUrl());
 
+        // Initialize WHIP camera list
+        const addWhipCameraBtn = document.getElementById('addWhipCameraBtn');
+        if (addWhipCameraBtn) addWhipCameraBtn.addEventListener('click', () => this.addWhipCamera());
+
         // Initialize with one URL entry
         this.initializeWhepUrls();
+        this.initializeWhipCameras();
 
         // KVS UI bindings
         this.kvs = {
@@ -89,18 +98,22 @@ class WebRTCSignalingClient {
         this.mode = mode;
         const wsSection = document.getElementById('wsSection');
         const whepSection = document.getElementById('whepSection');
+        const whipSection = document.getElementById('whipSection');
         const kvsSection = document.getElementById('kvsSection');
         const modeWsBtn = document.getElementById('modeWsBtn');
         const modeWhepBtn = document.getElementById('modeWhepBtn');
+        const modeWhipBtn = document.getElementById('modeWhipBtn');
         const modeKvsBtn = document.getElementById('modeKvsBtn');
-        if (wsSection && whepSection && kvsSection) {
+        if (wsSection && whepSection && whipSection && kvsSection) {
             wsSection.style.display = mode === 'ws' ? 'block' : 'none';
             whepSection.style.display = mode === 'whep' ? 'block' : 'none';
+            whipSection.style.display = mode === 'whip' ? 'block' : 'none';
             kvsSection.style.display = mode === 'kvs' ? 'block' : 'none';
         }
-        if (modeWsBtn && modeWhepBtn && modeKvsBtn) {
+        if (modeWsBtn && modeWhepBtn && modeWhipBtn && modeKvsBtn) {
             modeWsBtn.classList.toggle('active', mode === 'ws');
             modeWhepBtn.classList.toggle('active', mode === 'whep');
+            modeWhipBtn.classList.toggle('active', mode === 'whip');
             modeKvsBtn.classList.toggle('active', mode === 'kvs');
         }
         this.log(`Switched mode to ${mode.toUpperCase()}`, 'info');
@@ -953,6 +966,330 @@ class WebRTCSignalingClient {
         return pc;
     }
 
+    // ======================
+    // WHIP (Browser as Receiver)
+    // ======================
+
+    initializeWhipCameras() {
+        this.addWhipCamera(); // Add first camera entry
+    }
+
+    addWhipCamera() {
+        const whipCameraList = document.getElementById('whipCameraList');
+        if (!whipCameraList) return;
+
+        const entryId = `whip_entry_${++this.whipUrlCounter}`;
+
+        // Create camera entry element
+        const cameraItem = document.createElement('div');
+        cameraItem.className = 'whep-url-item';
+        cameraItem.setAttribute('data-whip-entry-id', entryId);
+        cameraItem.style.display = 'grid';
+        cameraItem.style.gridTemplateColumns = '1fr';
+        cameraItem.style.gap = '8px';
+
+        cameraItem.innerHTML = `
+            <div style="display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;">
+                <input type="text" placeholder="http://server:port/camera-001/whip" class="whep-url-input whip-endpoint-input" 
+                       title="Full WHIP endpoint URL where camera will POST">
+                <div class="button-group">
+                    <button class="btn btn-primary btn-sm connect-btn" title="Start listening for WHIP connections">Connect</button>
+                    <button class="btn btn-danger btn-sm disconnect-btn" style="display:none;" title="Disconnect this WHIP session">Disconnect</button>
+                </div>
+                <button class="btn btn-bin btn-icon remove-btn" title="Remove this endpoint" aria-label="Remove endpoint">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M9 3h6a1 1 0 0 1 1 1v1h4v2H4V5h4V4a1 1 0 0 1 1-1zm-3 6h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v7h2v-7h-2zm4 0v7h2v-7h-2z"/>
+                    </svg>
+                </button>
+            </div>
+            <details style="margin-top: 4px;">
+                <summary style="cursor:pointer; color:#4a5568; font-weight: 600; font-size: 0.85rem; padding: 8px 0;">WHIP Server</summary>
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
+                    <input type="text" placeholder="URL (optional metadata)" class="whep-url-input whip-url-input" 
+                           style="font-size: 0.85rem; padding: 6px 8px;"
+                           title="Optional URL metadata to send to camera">
+                    <input type="text" placeholder="Token (optional auth)" class="whep-url-input whip-token-input" 
+                           style="font-size: 0.85rem; padding: 6px 8px;"
+                           title="Optional auth token to send to camera">
+                </div>
+            </details>
+        `;
+
+        // Add event listeners
+        const connectBtn = cameraItem.querySelector('.connect-btn');
+        const disconnectBtn = cameraItem.querySelector('.disconnect-btn');
+        const removeBtn = cameraItem.querySelector('.remove-btn');
+        const endpointInput = cameraItem.querySelector('.whip-endpoint-input');
+        const urlInput = cameraItem.querySelector('.whip-url-input');
+        const tokenInput = cameraItem.querySelector('.whip-token-input');
+
+        connectBtn.addEventListener('click', () => {
+            const endpoint = endpointInput.value.trim();
+            if (!endpoint) {
+                this.log('WHIP endpoint URL is required', 'error');
+                return;
+            }
+            const url = urlInput.value.trim();
+            const token = tokenInput.value.trim();
+            this.startWhipListen(entryId, endpoint, url, token);
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            this.stopWhipSession(entryId);
+        });
+        
+        removeBtn.addEventListener('click', () => this.removeWhipCamera(entryId));
+
+        whipCameraList.appendChild(cameraItem);
+    }
+
+    removeWhipCamera(entryId) {
+        const whipCameraList = document.getElementById('whipCameraList');
+        if (!whipCameraList) return;
+
+        // Don't allow removing if it's the last one
+        const items = whipCameraList.querySelectorAll('[data-whip-entry-id]');
+        if (items.length <= 1) {
+            this.log('Cannot remove the last WHIP endpoint entry', 'warning');
+            return;
+        }
+
+        // Stop session if active
+        if (this.whipConnections.has(entryId)) {
+            this.stopWhipSession(entryId);
+        }
+
+        // Remove from DOM
+        const cameraItem = document.querySelector(`[data-whip-entry-id="${entryId}"]`);
+        if (cameraItem) {
+            cameraItem.remove();
+        }
+    }
+
+    updateWhipButtonState(entryId, state) {
+        const targetItem = document.querySelector(`[data-whip-entry-id="${entryId}"]`);
+        if (!targetItem) return;
+
+        const connectBtn = targetItem.querySelector('.connect-btn');
+        const disconnectBtn = targetItem.querySelector('.disconnect-btn');
+        const removeBtn = targetItem.querySelector('.remove-btn');
+        const endpointInput = targetItem.querySelector('.whip-endpoint-input');
+        const urlInput = targetItem.querySelector('.whip-url-input');
+        const tokenInput = targetItem.querySelector('.whip-token-input');
+
+        switch (state) {
+            case 'disconnected':
+                connectBtn.style.display = 'inline-block';
+                connectBtn.disabled = false;
+                connectBtn.textContent = 'Connect';
+                disconnectBtn.style.display = 'none';
+                removeBtn.disabled = false;
+                if (endpointInput) endpointInput.disabled = false;
+                if (urlInput) urlInput.disabled = false;
+                if (tokenInput) tokenInput.disabled = false;
+                break;
+            case 'listening':
+                connectBtn.style.display = 'inline-block';
+                connectBtn.disabled = true;
+                connectBtn.textContent = 'Connecting...';
+                disconnectBtn.style.display = 'none';
+                removeBtn.disabled = true;
+                if (endpointInput) endpointInput.disabled = true;
+                if (urlInput) urlInput.disabled = true;
+                if (tokenInput) tokenInput.disabled = true;
+                break;
+            case 'connected':
+                connectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'inline-block';
+                disconnectBtn.disabled = false;
+                removeBtn.disabled = true;
+                if (endpointInput) endpointInput.disabled = true;
+                if (urlInput) urlInput.disabled = true;
+                if (tokenInput) tokenInput.disabled = true;
+                break;
+        }
+    }
+
+    startWhipListen(entryId, endpoint, url, token) {
+        if (this.whipConnections.has(entryId)) {
+            this.log('Already listening on this endpoint', 'warning', { entryId });
+            return;
+        }
+
+        this.log('Starting WHIP listening mode', 'info', { entryId, endpoint, url, token: token ? '***' : 'none' });
+
+        // Initialize connection state
+        const connection = {
+            pc: null,
+            endpointUrl: endpoint,
+            state: 'listening',
+            entryId: entryId,
+            url: url,
+            token: token
+        };
+        
+        this.whipConnections.set(entryId, connection);
+        this.updateWhipButtonState(entryId, 'listening');
+
+        // Notify server that we're ready to receive WHIP connections on this endpoint
+        this.sendMessage({
+            type: 'whip-listen',
+            entryId: entryId,
+            endpointUrl: endpoint,
+            url: url,
+            token: token
+        });
+    }
+
+    handleWhipOffer(entryId, offer, url, token) {
+        this.log('Received WHIP offer from camera', 'info', { entryId, url, token });
+
+        const connection = this.whipConnections.get(entryId);
+        if (!connection || connection.state === 'disconnected') {
+            this.log('WHIP connection not in listening state', 'error', { entryId });
+            return Promise.reject(new Error('Not listening'));
+        }
+
+        // Create peer connection for receiving
+        connection.pc = this.createWhipPeerConnection(entryId);
+
+        // Set remote description (offer from camera)
+        return connection.pc.setRemoteDescription(new RTCSessionDescription(offer))
+            .then(() => {
+                this.log('Remote description set for WHIP', 'success', { entryId });
+                return connection.pc.createAnswer();
+            })
+            .then((answer) => {
+                this.log('Answer created for WHIP', 'info', { entryId });
+                return connection.pc.setLocalDescription(answer);
+            })
+            .then(() => {
+                this.log('Local description set for WHIP, waiting for ICE gathering...', 'info', { entryId });
+                
+                // Wait for ICE gathering to complete before sending answer
+                return this.waitForIceGatheringComplete(connection.pc);
+            })
+            .then(() => {
+                this.log('ICE gathering completed for WHIP', 'success', { entryId });
+                
+                const candidateLines = connection.pc.localDescription.sdp.split('\n').filter(line => line.startsWith('a=candidate'));
+                this.log(`Sending WHIP answer with ${candidateLines.length} ICE candidates`, 'info', { entryId });
+                
+                // Update state
+                connection.state = 'connected';
+                this.updateWhipButtonState(entryId, 'connected');
+
+                // Return the answer with all candidates to be sent back to camera
+                return connection.pc.localDescription;
+            })
+            .catch((error) => {
+                this.log('Error handling WHIP offer', 'error', { entryId, error: error.message });
+                throw error;
+            });
+    }
+
+    stopWhipSession(entryId) {
+        const connection = this.whipConnections.get(entryId);
+        if (!connection) return;
+
+        this.log('Stopping WHIP session', 'info', { entryId });
+
+        // Close peer connection
+        if (connection.pc) {
+            connection.pc.close();
+            connection.pc = null;
+            this.log('WHIP peer connection closed', 'info', { entryId });
+        }
+
+        // Set disconnected state and update UI
+        connection.state = 'disconnected';
+        this.updateWhipButtonState(entryId, 'disconnected');
+
+        // Stop stats collection
+        this.stopStatsCollection(entryId);
+
+        // Remove stream display
+        if (this.activeStreams.has(entryId)) {
+            this.handleStreamEnded(entryId);
+        }
+
+        // Notify server to unregister endpoint
+        this.sendMessage({
+            type: 'whip-stop',
+            entryId: entryId,
+            endpointUrl: connection.endpointUrl
+        });
+
+        // Remove from connections map
+        this.whipConnections.delete(entryId);
+    }
+
+    createWhipPeerConnection(entryId) {
+        const configuration = {
+            iceServers: CONFIG.ICE_SERVERS || []
+        };
+        const pc = new RTCPeerConnection(configuration);
+        pc.addTransceiver('video', { direction: 'recvonly' });
+
+        pc.ontrack = (event) => {
+            const stream = event.streams[0];
+            this.handleStreamReceived(entryId, stream);
+            // Mark as connected when stream is received
+            const connection = this.whipConnections.get(entryId);
+            if (connection) {
+                connection.state = 'connected';
+                this.updateWhipButtonState(entryId, 'connected');
+            }
+            // Start stats collection for WHIP connection
+            this.startStatsCollection(entryId);
+        };
+
+        pc.onconnectionstatechange = () => {
+            const state = pc.connectionState;
+            this.log(`WHIP connection state changed: ${state}`, 'info', { entryId, state });
+
+            // Update the stream status indicator
+            const streamElement = this.streamElements.get(entryId);
+            if (streamElement) {
+                const status = streamElement.querySelector('.stream-status');
+                if (status) {
+                    status.className = `stream-status ${state === 'connected' ? 'connected' : 'disconnected'}`;
+                }
+            }
+
+            // Handle failed or disconnected states
+            if (state === 'failed' || state === 'disconnected') {
+                const connection = this.whipConnections.get(entryId);
+                if (connection && connection.state !== 'disconnected') {
+                    this.log(`WHIP connection ${state}`, 'error', { entryId });
+
+                    // Update state and UI
+                    connection.state = 'disconnected';
+                    this.updateWhipButtonState(entryId, 'disconnected');
+
+                    // Stop stats collection
+                    this.stopStatsCollection(entryId);
+
+                    // Clean up if stream was active
+                    if (this.activeStreams.has(entryId)) {
+                        this.handleStreamEnded(entryId);
+                    }
+                }
+            }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                this.logIceStatistics(entryId, pc);
+            }
+        };
+
+        // No trickle ICE - we wait for all candidates before sending answer
+        // ICE gathering happens after setLocalDescription, we'll wait for it to complete
+
+        return pc;
+    }
+
     // Wait until ICE gathering is complete to ensure localDescription contains candidates
     waitForIceGatheringComplete(peerConnection) {
         return new Promise((resolve) => {
@@ -1359,12 +1696,57 @@ class WebRTCSignalingClient {
             case 'ice-servers':
                 this.handleIceServers(message.iceServers);
                 break;
+            case 'whip-offer':
+                this.handleWhipOfferMessage(message);
+                break;
+            case 'whip-delete':
+                this.handleWhipDeleteMessage(message);
+                break;
             default:
                 this.log(`Unknown message type received`, 'warning', {
                     messageType: message.type,
                     timestamp: new Date().toISOString()
                 });
         }
+    }
+
+    async handleWhipOfferMessage(message) {
+        const { entryId, offer, url, token, requestId } = message;
+        
+        this.log('Received WHIP offer message from server', 'info', { entryId, url, token, requestId });
+
+        try {
+            const answer = await this.handleWhipOffer(entryId, offer, url, token);
+            
+            // Send answer back to server
+            this.sendMessage({
+                type: 'whip-answer',
+                entryId: entryId,
+                answer: answer,
+                requestId: requestId
+            });
+            
+            this.log('Sent WHIP answer back to server', 'success', { entryId, requestId });
+        } catch (error) {
+            this.log('Failed to handle WHIP offer', 'error', { entryId, error: error.message });
+            
+            // Send error back to server
+            this.sendMessage({
+                type: 'whip-error',
+                entryId: entryId,
+                error: error.message,
+                requestId: requestId
+            });
+        }
+    }
+
+    handleWhipDeleteMessage(message) {
+        const { entryId } = message;
+        
+        this.log('Received WHIP delete from camera', 'info', { entryId });
+        
+        // Stop the WHIP session
+        this.stopWhipSession(entryId);
     }
 
     handleCameraRegistration(cameraId) {
@@ -1574,12 +1956,14 @@ class WebRTCSignalingClient {
         }
     }
 
-    handleStreamReceived(cameraId, stream) {
-        this.log(`Media stream received from camera ${cameraId}`, 'success', {
+    handleStreamReceived(cameraId, stream, isOutgoing = false) {
+        const streamType = isOutgoing ? 'outgoing (publishing)' : 'incoming (receiving)';
+        this.log(`Media stream ${streamType} for ${cameraId}`, 'success', {
             cameraId,
             streamId: stream.id,
             videoTracks: stream.getVideoTracks().length,
             audioTracks: stream.getAudioTracks().length,
+            isOutgoing,
             timestamp: new Date().toISOString()
         });
 
@@ -1590,7 +1974,7 @@ class WebRTCSignalingClient {
         }
 
         // Create or update video element
-        this.createOrUpdateStreamElement(cameraId, stream);
+        this.createOrUpdateStreamElement(cameraId, stream, isOutgoing);
 
         // Update UI
         this.activeStreams.add(cameraId);
@@ -1652,7 +2036,7 @@ class WebRTCSignalingClient {
         });
     }
 
-    createOrUpdateStreamElement(cameraId, stream) {
+    createOrUpdateStreamElement(cameraId, stream, isOutgoing = false) {
         let streamContainer = this.streamElements.get(cameraId);
 
         if (!streamContainer) {
@@ -1785,8 +2169,9 @@ class WebRTCSignalingClient {
             streamInfo.className = 'stream-info';
             // Check connection type
             const isWhepStream = this.whepConnections.has(cameraId);
+            const isWhipStream = this.whipConnections.has(cameraId);
             const isKvsStream = this.kvs.cameraId === cameraId;
-            streamInfo.textContent = isKvsStream ? `KVS ${cameraId}` : (isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`);
+            streamInfo.textContent = isKvsStream ? `KVS ${cameraId}` : (isWhipStream ? `WHIP ${cameraId}` : (isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`));
 
             streamContainer.appendChild(video);
             streamContainer.appendChild(statusOverlay);

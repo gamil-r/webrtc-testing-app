@@ -157,6 +157,260 @@ function hmac(key, data) { return crypto.createHmac('sha256', key).update(data, 
 function hmacHex(key, data) { return hmac(key, data).toString('hex'); }
 function sha256Hex(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
 
+// WHIP Endpoints - Browser acts as WHIP server (receiver)
+// Store pending WHIP requests waiting for browser answer
+const pendingWhipRequests = new Map(); // requestId -> { res, timeout }
+// Store mapping of endpoint paths to browser entry IDs
+const whipEndpointMap = new Map(); // path -> { entryId, url, token }
+
+// POST /:cameraId/whip - Camera posts SDP offer here
+app.post('/:cameraId/whip', async (req, res) => {
+    try {
+        const cameraId = req.params.cameraId;
+        const requestPath = `/${cameraId}/whip`;
+        
+        log(`WHIP POST request to path: ${requestPath}`);
+        
+        // Look up which browser entry is listening on this path
+        const endpointInfo = whipEndpointMap.get(requestPath);
+        if (!endpointInfo) {
+            log(`  → No browser listening on this endpoint`);
+            return res.status(404).send('No browser listening on this endpoint');
+        }
+        
+        const { entryId, url: storedUrl, token: storedToken } = endpointInfo;
+        
+        // SDP offer should be in the body as application/sdp or parsed from JSON
+        let offer;
+        if (req.headers['content-type'] === 'application/sdp') {
+            offer = {
+                type: 'offer',
+                sdp: req.body.toString()
+            };
+        } else if (req.body.sdp) {
+            offer = req.body;
+        } else {
+            return res.status(400).send('Missing SDP offer');
+        }
+
+        const requestId = crypto.randomBytes(16).toString('hex');
+        
+        log(`  → Entry ID: ${entryId}`);
+        log(`  → Request ID: ${requestId}`);
+        log(`  → Stored URL: ${storedUrl || 'N/A'}`);
+        log(`  → Stored Token: ${storedToken ? '***' : 'N/A'}`);
+        log(`  → SDP length: ${offer.sdp ? offer.sdp.length : 0}`);
+
+        // Create promise that will be resolved when browser sends answer
+        const answerPromise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                pendingWhipRequests.delete(requestId);
+                reject(new Error('Timeout waiting for browser answer'));
+            }, 30000); // 30 second timeout
+
+            pendingWhipRequests.set(requestId, {
+                resolve,
+                reject,
+                timeout,
+                res
+            });
+        });
+
+        // Forward offer to browser via WebSocket
+        sendToWebClients({
+            type: 'whip-offer',
+            entryId: entryId,
+            offer: offer,
+            url: storedUrl,
+            token: storedToken,
+            requestId: requestId
+        });
+
+        log(`  → Offer forwarded to browser, waiting for answer...`);
+
+        // Wait for answer from browser
+        try {
+            const answer = await answerPromise;
+            
+            log(`  → Received answer from browser for entry ${entryId}`);
+            
+            // Send answer back to camera as SDP
+            res.setHeader('Content-Type', 'application/sdp');
+            res.setHeader('Location', requestPath); // WHIP spec - location for DELETE
+            res.status(201).send(answer.sdp);
+            
+            log(`  → Answer sent to camera`);
+        } catch (error) {
+            log(`  → Error: ${error.message}`);
+            res.status(500).send(error.message);
+        }
+    } catch (error) {
+        log(`WHIP POST error: ${error.message}`);
+        res.status(500).send(error.message);
+    }
+});
+
+// DELETE /:cameraId/whip - Camera terminates WHIP session
+app.delete('/:cameraId/whip', (req, res) => {
+    try {
+        const cameraId = req.params.cameraId;
+        const requestPath = `/${cameraId}/whip`;
+        
+        log(`WHIP DELETE request to path: ${requestPath}`);
+
+        // Look up which browser entry is listening on this path
+        const endpointInfo = whipEndpointMap.get(requestPath);
+        if (!endpointInfo) {
+            log(`  → No browser listening on this endpoint (already cleaned up?)`);
+            return res.status(200).send('OK');
+        }
+
+        const { entryId } = endpointInfo;
+
+        // Notify browser to close the session
+        sendToWebClients({
+            type: 'whip-delete',
+            entryId: entryId
+        });
+
+        log(`  → Delete notification sent to browser for entry ${entryId}`);
+        res.status(200).send('OK');
+    } catch (error) {
+        log(`WHIP DELETE error: ${error.message}`);
+        res.status(500).send(error.message);
+    }
+});
+
+// WHEP Proxy Endpoint - allows client to access WHEP servers through our server
+app.post('/whep-proxy', async (req, res) => {
+    try {
+        const targetUrl = req.headers['x-target-url'];
+        if (!targetUrl) {
+            return res.status(400).send('Missing X-Target-URL header');
+        }
+
+        log(`WHEP proxy POST request to ${targetUrl}`);
+
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/sdp',
+                'Accept': 'application/sdp'
+            },
+            body: req.body
+        });
+
+        // Forward status and headers
+        res.status(response.status);
+        
+        // Forward important headers (especially Location for session management)
+        const location = response.headers.get('Location');
+        if (location) {
+            res.setHeader('Location', location);
+        }
+        const contentType = response.headers.get('Content-Type');
+        if (contentType) {
+            res.setHeader('Content-Type', contentType);
+        }
+
+        const responseBody = await response.text();
+        log(`WHEP proxy response: ${response.status} ${response.statusText}, body length: ${responseBody.length}`);
+        
+        res.send(responseBody);
+    } catch (error) {
+        log(`WHEP proxy error: ${error.message}`);
+        res.status(500).send(`WHEP proxy error: ${error.message}`);
+    }
+});
+
+app.delete('/whep-proxy', async (req, res) => {
+    try {
+        const targetUrl = req.headers['x-target-url'];
+        if (!targetUrl) {
+            return res.status(400).send('Missing X-Target-URL header');
+        }
+
+        log(`WHEP proxy DELETE request to ${targetUrl}`);
+
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'DELETE'
+        });
+
+        log(`WHEP proxy DELETE response: ${response.status} ${response.statusText}`);
+        res.status(response.status).send();
+    } catch (error) {
+        log(`WHEP proxy DELETE error: ${error.message}`);
+        res.status(500).send(`WHEP proxy error: ${error.message}`);
+    }
+});
+
+// WHIP Proxy Endpoint - allows client to publish to WHIP servers through our server
+app.post('/whip-proxy', async (req, res) => {
+    try {
+        const targetUrl = req.headers['x-target-url'];
+        if (!targetUrl) {
+            return res.status(400).send('Missing X-Target-URL header');
+        }
+
+        log(`WHIP proxy POST request to ${targetUrl}`);
+
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/sdp',
+                'Accept': 'application/sdp'
+            },
+            body: req.body
+        });
+
+        // Forward status and headers
+        res.status(response.status);
+        
+        // Forward important headers (especially Location for session management)
+        const location = response.headers.get('Location');
+        if (location) {
+            res.setHeader('Location', location);
+        }
+        const contentType = response.headers.get('Content-Type');
+        if (contentType) {
+            res.setHeader('Content-Type', contentType);
+        }
+
+        const responseBody = await response.text();
+        log(`WHIP proxy response: ${response.status} ${response.statusText}, body length: ${responseBody.length}`);
+        
+        res.send(responseBody);
+    } catch (error) {
+        log(`WHIP proxy error: ${error.message}`);
+        res.status(500).send(`WHIP proxy error: ${error.message}`);
+    }
+});
+
+app.delete('/whip-proxy', async (req, res) => {
+    try {
+        const targetUrl = req.headers['x-target-url'];
+        if (!targetUrl) {
+            return res.status(400).send('Missing X-Target-URL header');
+        }
+
+        log(`WHIP proxy DELETE request to ${targetUrl}`);
+
+        const fetch = require('node-fetch');
+        const response = await fetch(targetUrl, {
+            method: 'DELETE'
+        });
+
+        log(`WHIP proxy DELETE response: ${response.status} ${response.statusText}`);
+        res.status(response.status).send();
+    } catch (error) {
+        log(`WHIP proxy DELETE error: ${error.message}`);
+        res.status(500).send(`WHIP proxy error: ${error.message}`);
+    }
+});
+
 // Create HTTP server
 const server = http.createServer(app);
 
@@ -393,6 +647,18 @@ function handleMessage(clientId, message) {
         case 'ice-candidate':
             handleIceCandidate(clientId, message);
             break;
+        case 'whip-listen':
+            handleWhipListen(clientId, message);
+            break;
+        case 'whip-answer':
+            handleWhipAnswer(clientId, message);
+            break;
+        case 'whip-error':
+            handleWhipError(clientId, message);
+            break;
+        case 'whip-stop':
+            handleWhipStop(clientId, message);
+            break;
         default:
             log(`Unknown message type from ${clientId}: ${message.type}`);
     }
@@ -431,15 +697,20 @@ function handleRegisterCamera(clientId, message) {
     if (!client) return;
 
     const cameraId = message.cameraId;
+    const httpEndpoint = message.httpEndpoint; // Optional HTTP endpoint for direct communication
 
     if (!cameras.has(cameraId)) {
         cameras.set(cameraId, {
             id: cameraId,
             client: client,
+            httpEndpoint: httpEndpoint || null,
             registeredAt: new Date()
         });
 
         log(`Camera registered: ${cameraId} by client ${clientId}`);
+        if (httpEndpoint) {
+            log(`  → HTTP Endpoint: ${httpEndpoint}`);
+        }
 
         // Notify all web clients
         sendToWebClients({
@@ -676,6 +947,86 @@ function handleIceCandidate(clientId, message) {
             fromClient: clientId
         });
     }
+}
+
+function handleWhipListen(clientId, message) {
+    const { entryId, endpointUrl, url, token } = message;
+    
+    // Extract path from full URL
+    let path;
+    try {
+        const urlObj = new URL(endpointUrl);
+        path = urlObj.pathname;
+    } catch (e) {
+        // If not a full URL, assume it's already a path
+        path = endpointUrl;
+    }
+    
+    log(`Web client ${clientId} started listening on WHIP endpoint`);
+    log(`  → Entry ID: ${entryId}`);
+    log(`  → Path: ${path}`);
+    log(`  → URL metadata: ${url || 'none'}`);
+    log(`  → Token: ${token ? '***' : 'none'}`);
+    
+    // Store the endpoint mapping
+    whipEndpointMap.set(path, {
+        entryId: entryId,
+        url: url || null,
+        token: token || null,
+        clientId: clientId
+    });
+    
+    log(`  → Endpoint registered and ready to receive camera POST`);
+}
+
+function handleWhipAnswer(clientId, message) {
+    const { requestId, answer } = message;
+    
+    log(`Received WHIP answer from browser for request ${requestId}`);
+    
+    const pending = pendingWhipRequests.get(requestId);
+    if (pending) {
+        clearTimeout(pending.timeout);
+        pending.resolve(answer);
+        pendingWhipRequests.delete(requestId);
+        log(`  → Answer resolved and forwarded to camera`);
+    } else {
+        log(`  → Warning: No pending request found for ${requestId}`);
+    }
+}
+
+function handleWhipError(clientId, message) {
+    const { requestId, error } = message;
+    
+    log(`Received WHIP error from browser for request ${requestId}: ${error}`);
+    
+    const pending = pendingWhipRequests.get(requestId);
+    if (pending) {
+        clearTimeout(pending.timeout);
+        pending.reject(new Error(error));
+        pendingWhipRequests.delete(requestId);
+    }
+}
+
+function handleWhipStop(clientId, message) {
+    const { entryId, endpointUrl } = message;
+    
+    // Extract path from URL
+    let path;
+    try {
+        const urlObj = new URL(endpointUrl);
+        path = urlObj.pathname;
+    } catch (e) {
+        path = endpointUrl;
+    }
+    
+    log(`Web client ${clientId} stopped WHIP endpoint for entry ${entryId}`);
+    log(`  → Path: ${path}`);
+    
+    // Remove from endpoint map
+    whipEndpointMap.delete(path);
+    
+    log(`  → Endpoint unregistered`);
 }
 
 function generateClientId() {

@@ -926,6 +926,7 @@
                 <div class="tab-bar">
                     <button id="modeWsBtn" class="tab active">WebSocket</button>
                     <button id="modeWhepBtn" class="tab">WHEP</button>
+                    <button id="modeWhipBtn" class="tab">WHIP</button>
                     <button id="modeKvsBtn" class="tab">AWS KVS</button>
                 </div>
                 
@@ -1003,6 +1004,42 @@
                                     <strong>HTTP Proxy:</strong> When enabled, requests go through server → WHEP endpoint
                                 </div>
                             </div>
+                </div>
+                
+                <!-- WHIP Mode Section -->
+                <div id="whipSection" style="display:none;">
+                    <div class="whep-config">
+                        <div class="whep-header">
+                            <label class="whep-label">WHIP Endpoints (Camera ID)</label>
+                            <button id="addWhipCameraBtn" class="add-url-btn" title="Add new camera for WHIP">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                                </svg>
+                            </button>
+                        </div>
+                        <div id="whipCameraList" class="whep-url-list">
+                            <!-- WHIP camera entries will be dynamically added here -->
+                        </div>
+                    </div>
+                    <div class="button-legend">
+                        <div class="legend-title">WHIP Mode (Browser as Receiver)</div>
+                        <div class="legend-item">
+                            <span class="legend-color call"></span>
+                            <span class="legend-text">Connect - Browser waits for camera to POST WHIP offer to this endpoint</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color hangup"></span>
+                            <span class="legend-text">Disconnect - Close WHIP session and stop receiving from camera</span>
+                        </div>
+                        <div class="legend-item" style="margin-top: 8px; font-size: 0.85rem; color: #6c757d;">
+                            <strong>Flow:</strong> Camera → POST to WHIP URL → Server → Browser (answer) → Server → Camera
+                        </div>
+                        <div class="legend-item" style="font-size: 0.85rem; color: #6c757d;">
+                            <strong>Note:</strong> Browser waits for all ICE candidates before sending answer (no trickle ICE)
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- KVS Mode Section -->
