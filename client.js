@@ -990,11 +990,15 @@ class WebRTCSignalingClient {
 
         cameraItem.innerHTML = `
             <div style="display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;">
-                <input type="text" placeholder="http://server:port/camera-001/whip" class="whep-url-input whip-endpoint-input" 
-                       title="Full WHIP endpoint URL where camera will POST">
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                    <input type="text" placeholder="http://device:port/camera-001/start" class="whep-url-input whip-endpoint-input" 
+                           title="Device control endpoint. Camera ID extracted from path (second-to-last part).">
+                    <small style="font-size: 0.7rem; color: #718096;">Camera ID extracted from URL path</small>
+                </div>
                 <div class="button-group">
-                    <button class="btn btn-primary btn-sm connect-btn" title="Start listening for WHIP connections">Connect</button>
+                    <button class="btn btn-primary btn-sm connect-btn" title="Tell device to start WHIP publishing">Connect</button>
                     <button class="btn btn-danger btn-sm disconnect-btn" style="display:none;" title="Disconnect this WHIP session">Disconnect</button>
+                    <button class="btn btn-danger btn-sm cancel-btn" style="display:none;" title="Cancel connection attempt">Cancel</button>
                 </div>
                 <button class="btn btn-bin btn-icon remove-btn" title="Remove this endpoint" aria-label="Remove endpoint">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1002,15 +1006,16 @@ class WebRTCSignalingClient {
                     </svg>
                 </button>
             </div>
-            <details style="margin-top: 4px;">
-                <summary style="cursor:pointer; color:#4a5568; font-weight: 600; font-size: 0.85rem; padding: 8px 0;">WHIP Server</summary>
+            <details style="margin-top: 8px;">
+                <summary style="cursor:pointer; color:#4a5568; font-weight: 600; font-size: 0.85rem; padding: 8px 0;">WHIP Server (to send to device)</summary>
                 <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
-                    <input type="text" placeholder="URL (optional metadata)" class="whep-url-input whip-url-input" 
+                    <input type="text" placeholder='Base URL (optional - e.g., http://hostname:port)' class="whep-url-input whip-url-input" 
                            style="font-size: 0.85rem; padding: 6px 8px;"
-                           title="Optional URL metadata to send to camera">
-                    <input type="text" placeholder="Token (optional auth)" class="whep-url-input whip-token-input" 
+                           title="Base URL to send to device. Device appends /<camera-id>/whip. Leave empty to send empty string.">
+                    <small style="font-size: 0.75rem; color: #718096; margin-top: -4px;">Device appends: <strong>/<camera-id>/whip</strong> to this URL</small>
+                    <input type="text" placeholder='Token (optional - empty = "")' class="whep-url-input whip-token-input" 
                            style="font-size: 0.85rem; padding: 6px 8px;"
-                           title="Optional auth token to send to camera">
+                           title="Auth token to send to device. Leave empty to send empty string.">
                 </div>
             </details>
         `;
@@ -1018,6 +1023,7 @@ class WebRTCSignalingClient {
         // Add event listeners
         const connectBtn = cameraItem.querySelector('.connect-btn');
         const disconnectBtn = cameraItem.querySelector('.disconnect-btn');
+        const cancelBtn = cameraItem.querySelector('.cancel-btn');
         const removeBtn = cameraItem.querySelector('.remove-btn');
         const endpointInput = cameraItem.querySelector('.whip-endpoint-input');
         const urlInput = cameraItem.querySelector('.whip-url-input');
@@ -1026,16 +1032,43 @@ class WebRTCSignalingClient {
         connectBtn.addEventListener('click', () => {
             const endpoint = endpointInput.value.trim();
             if (!endpoint) {
-                this.log('WHIP endpoint URL is required', 'error');
+                this.log('Device endpoint URL is required', 'error');
                 return;
             }
+            
+            // Extract camera ID from device endpoint URL
+            // Expected format: http://device:port/camera-001/start
+            let cameraId = null;
+            try {
+                const urlObj = new URL(endpoint);
+                const pathParts = urlObj.pathname.split('/').filter(p => p);
+                // Get the part before 'start' (or last part if no 'start')
+                if (pathParts.length >= 2) {
+                    cameraId = pathParts[pathParts.length - 2]; // Assume second-to-last is camera ID
+                } else if (pathParts.length === 1) {
+                    cameraId = pathParts[0];
+                }
+            } catch (e) {
+                this.log('Invalid device endpoint URL format', 'error', { endpoint });
+                return;
+            }
+            
+            if (!cameraId) {
+                this.log('Could not extract camera ID from device endpoint URL', 'error', { endpoint });
+                return;
+            }
+            
             const url = urlInput.value.trim();
             const token = tokenInput.value.trim();
-            this.startWhipListen(entryId, endpoint, url, token);
+            this.startWhipListen(entryId, endpoint, cameraId, url, token);
         });
         
         disconnectBtn.addEventListener('click', () => {
             this.stopWhipSession(entryId);
+        });
+        
+        cancelBtn.addEventListener('click', () => {
+            this.cancelWhipConnection(entryId);
         });
         
         removeBtn.addEventListener('click', () => this.removeWhipCamera(entryId));
@@ -1072,6 +1105,7 @@ class WebRTCSignalingClient {
 
         const connectBtn = targetItem.querySelector('.connect-btn');
         const disconnectBtn = targetItem.querySelector('.disconnect-btn');
+        const cancelBtn = targetItem.querySelector('.cancel-btn');
         const removeBtn = targetItem.querySelector('.remove-btn');
         const endpointInput = targetItem.querySelector('.whip-endpoint-input');
         const urlInput = targetItem.querySelector('.whip-url-input');
@@ -1083,16 +1117,17 @@ class WebRTCSignalingClient {
                 connectBtn.disabled = false;
                 connectBtn.textContent = 'Connect';
                 disconnectBtn.style.display = 'none';
+                cancelBtn.style.display = 'none';
                 removeBtn.disabled = false;
                 if (endpointInput) endpointInput.disabled = false;
                 if (urlInput) urlInput.disabled = false;
                 if (tokenInput) tokenInput.disabled = false;
                 break;
             case 'listening':
-                connectBtn.style.display = 'inline-block';
-                connectBtn.disabled = true;
-                connectBtn.textContent = 'Connecting...';
+                connectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'none';
+                cancelBtn.style.display = 'inline-block';
+                cancelBtn.disabled = false;
                 removeBtn.disabled = true;
                 if (endpointInput) endpointInput.disabled = true;
                 if (urlInput) urlInput.disabled = true;
@@ -1102,6 +1137,7 @@ class WebRTCSignalingClient {
                 connectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'inline-block';
                 disconnectBtn.disabled = false;
+                cancelBtn.style.display = 'none';
                 removeBtn.disabled = true;
                 if (endpointInput) endpointInput.disabled = true;
                 if (urlInput) urlInput.disabled = true;
@@ -1110,39 +1146,124 @@ class WebRTCSignalingClient {
         }
     }
 
-    startWhipListen(entryId, endpoint, url, token) {
+    async startWhipListen(entryId, endpoint, cameraId, url, token) {
         if (this.whipConnections.has(entryId)) {
             this.log('Already listening on this endpoint', 'warning', { entryId });
             return;
         }
 
-        this.log('Starting WHIP listening mode', 'info', { entryId, endpoint, url, token: token ? '***' : 'none' });
+        // Use empty strings if not provided (no auto-generation)
+        const whipUrl = url || '';
+        const whipToken = token || '';
 
-        // Initialize connection state
+        this.log('Initiating WHIP connection request', 'info', { 
+            entryId,
+            cameraId,
+            deviceEndpoint: endpoint, 
+            whipUrl: whipUrl || '(empty)',
+            token: whipToken ? '***' : '(empty)' 
+        });
+
+        // Initialize connection state with AbortController
         const connection = {
             pc: null,
-            endpointUrl: endpoint,
+            deviceEndpoint: endpoint,
+            cameraId: cameraId,
+            whipUrl: whipUrl,
             state: 'listening',
             entryId: entryId,
-            url: url,
-            token: token
+            token: whipToken,
+            abortController: new AbortController()
         };
         
         this.whipConnections.set(entryId, connection);
         this.updateWhipButtonState(entryId, 'listening');
 
-        // Notify server that we're ready to receive WHIP connections on this endpoint
-        this.sendMessage({
-            type: 'whip-listen',
-            entryId: entryId,
-            endpointUrl: endpoint,
-            url: url,
-            token: token
-        });
+        try {
+            // Make HTTP POST request to device to tell it to start publishing
+            // Send the WHIP URL and token to the device (empty strings if not provided)
+            const requestBody = {
+                url: whipUrl,
+                token: whipToken
+            };
+            
+            this.log('Sending POST to device', 'info', { 
+                deviceEndpoint: endpoint,
+                bodyToSend: requestBody
+            });
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody),
+                signal: connection.abortController.signal
+            });
+
+            if (response.ok) {
+                this.log('Device acknowledged WHIP start request', 'success', { 
+                    entryId,
+                    cameraId,
+                    status: response.status 
+                });
+                this.log('Waiting for device to POST SDP offer to our WHIP server...', 'info', {
+                    expectedCameraId: cameraId,
+                    expectedPath: `/${cameraId}/whip`
+                });
+            } else {
+                const errorText = await response.text();
+                this.log('Device rejected WHIP start request', 'error', { 
+                    entryId,
+                    cameraId,
+                    status: response.status,
+                    error: errorText
+                });
+                
+                // Clean up on error
+                this.stopWhipSession(entryId);
+            }
+        } catch (error) {
+            // Check if it's an abort error
+            if (error.name === 'AbortError') {
+                this.log('WHIP connection cancelled by user', 'info', { entryId, cameraId });
+            } else {
+                this.log('Error sending WHIP start request to device', 'error', { 
+                    entryId,
+                    cameraId,
+                    error: error.message 
+                });
+            }
+            
+            // Clean up on error
+            this.stopWhipSession(entryId);
+        }
     }
 
-    handleWhipOffer(entryId, offer, url, token) {
-        this.log('Received WHIP offer from camera', 'info', { entryId, url, token });
+    cancelWhipConnection(entryId) {
+        const connection = this.whipConnections.get(entryId);
+        if (!connection) return;
+
+        this.log('Cancelling WHIP connection attempt', 'info', { entryId });
+
+        // Abort the fetch request if it's in progress
+        if (connection.abortController) {
+            connection.abortController.abort();
+            connection.abortController = null;
+        }
+
+        // Close the peer connection if it exists
+        if (connection.pc) {
+            connection.pc.close();
+            connection.pc = null;
+        }
+
+        // Clean up
+        this.stopWhipSession(entryId);
+    }
+
+    handleWhipOffer(entryId, offer) {
+        this.log('Processing WHIP offer from device', 'info', { entryId });
 
         const connection = this.whipConnections.get(entryId);
         if (!connection || connection.state === 'disconnected') {
@@ -1153,7 +1274,7 @@ class WebRTCSignalingClient {
         // Create peer connection for receiving
         connection.pc = this.createWhipPeerConnection(entryId);
 
-        // Set remote description (offer from camera)
+        // Set remote description (offer from device)
         return connection.pc.setRemoteDescription(new RTCSessionDescription(offer))
             .then(() => {
                 this.log('Remote description set for WHIP', 'success', { entryId });
@@ -1166,7 +1287,7 @@ class WebRTCSignalingClient {
             .then(() => {
                 this.log('Local description set for WHIP, waiting for ICE gathering...', 'info', { entryId });
                 
-                // Wait for ICE gathering to complete before sending answer
+                // Wait for ICE gathering to complete before sending answer (no trickle ICE)
                 return this.waitForIceGatheringComplete(connection.pc);
             })
             .then(() => {
@@ -1179,7 +1300,7 @@ class WebRTCSignalingClient {
                 connection.state = 'connected';
                 this.updateWhipButtonState(entryId, 'connected');
 
-                // Return the answer with all candidates to be sent back to camera
+                // Return the answer with all candidates to be sent back to device
                 return connection.pc.localDescription;
             })
             .catch((error) => {
@@ -1193,6 +1314,12 @@ class WebRTCSignalingClient {
         if (!connection) return;
 
         this.log('Stopping WHIP session', 'info', { entryId });
+
+        // Abort any pending fetch request
+        if (connection.abortController) {
+            connection.abortController.abort();
+            connection.abortController = null;
+        }
 
         // Close peer connection
         if (connection.pc) {
@@ -1212,13 +1339,6 @@ class WebRTCSignalingClient {
         if (this.activeStreams.has(entryId)) {
             this.handleStreamEnded(entryId);
         }
-
-        // Notify server to unregister endpoint
-        this.sendMessage({
-            type: 'whip-stop',
-            entryId: entryId,
-            endpointUrl: connection.endpointUrl
-        });
 
         // Remove from connections map
         this.whipConnections.delete(entryId);
@@ -1711,29 +1831,60 @@ class WebRTCSignalingClient {
     }
 
     async handleWhipOfferMessage(message) {
-        const { entryId, offer, url, token, requestId } = message;
+        const { cameraId, requestPath, offer, requestId } = message;
         
-        this.log('Received WHIP offer message from server', 'info', { entryId, url, token, requestId });
+        this.log('Received WHIP offer from device via server', 'info', { 
+            cameraId, 
+            requestPath,
+            requestId,
+            sdpLength: offer.sdp ? offer.sdp.length : 0
+        });
+
+        // Find which entry is waiting for this cameraId
+        let matchingEntryId = null;
+        for (const [entryId, connection] of this.whipConnections.entries()) {
+            if (connection.cameraId === cameraId) {
+                matchingEntryId = entryId;
+                break;
+            }
+        }
+
+        if (!matchingEntryId) {
+            this.log('No matching WHIP entry found for this camera', 'warning', { cameraId });
+            this.sendMessage({
+                type: 'whip-error',
+                error: `No matching WHIP entry for camera ${cameraId}`,
+                requestId: requestId
+            });
+            return;
+        }
+
+        this.log('Found matching WHIP entry', 'success', { entryId: matchingEntryId, cameraId });
 
         try {
-            const answer = await this.handleWhipOffer(entryId, offer, url, token);
+            const answer = await this.handleWhipOffer(matchingEntryId, offer);
             
-            // Send answer back to server
+            // Send answer back to server (include cameraId for server logging)
             this.sendMessage({
                 type: 'whip-answer',
-                entryId: entryId,
+                cameraId: cameraId,
                 answer: answer,
                 requestId: requestId
             });
             
-            this.log('Sent WHIP answer back to server', 'success', { entryId, requestId });
+            this.log('Sent WHIP answer back to server (will be forwarded to device)', 'success', { 
+                entryId: matchingEntryId,
+                cameraId,
+                requestId,
+                sdpLength: answer.sdp ? answer.sdp.length : 0
+            });
         } catch (error) {
-            this.log('Failed to handle WHIP offer', 'error', { entryId, error: error.message });
+            this.log('Failed to handle WHIP offer', 'error', { entryId: matchingEntryId, cameraId, error: error.message });
             
             // Send error back to server
             this.sendMessage({
                 type: 'whip-error',
-                entryId: entryId,
+                cameraId: cameraId,
                 error: error.message,
                 requestId: requestId
             });
@@ -1741,12 +1892,20 @@ class WebRTCSignalingClient {
     }
 
     handleWhipDeleteMessage(message) {
-        const { entryId } = message;
+        const { cameraId, requestPath } = message;
         
-        this.log('Received WHIP delete from camera', 'info', { entryId });
+        this.log('Received WHIP delete from device', 'info', { cameraId, requestPath });
         
-        // Stop the WHIP session
-        this.stopWhipSession(entryId);
+        // Find which entry matches this cameraId
+        for (const [entryId, connection] of this.whipConnections.entries()) {
+            if (connection.cameraId === cameraId) {
+                this.log('Stopping matching WHIP session', 'info', { entryId, cameraId });
+                this.stopWhipSession(entryId);
+                return;
+            }
+        }
+        
+        this.log('No matching WHIP entry found for delete', 'warning', { cameraId });
     }
 
     handleCameraRegistration(cameraId) {
@@ -2171,7 +2330,17 @@ class WebRTCSignalingClient {
             const isWhepStream = this.whepConnections.has(cameraId);
             const isWhipStream = this.whipConnections.has(cameraId);
             const isKvsStream = this.kvs.cameraId === cameraId;
-            streamInfo.textContent = isKvsStream ? `KVS ${cameraId}` : (isWhipStream ? `WHIP ${cameraId}` : (isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`));
+            
+            // For WHIP, get the actual camera ID from the connection
+            let displayId = cameraId;
+            if (isWhipStream) {
+                const whipConnection = this.whipConnections.get(cameraId);
+                if (whipConnection && whipConnection.cameraId) {
+                    displayId = whipConnection.cameraId;
+                }
+            }
+            
+            streamInfo.textContent = isKvsStream ? `KVS ${cameraId}` : (isWhipStream ? `WHIP ${displayId}` : (isWhepStream ? `WHEP ${cameraId}` : `Camera ${cameraId}`));
 
             streamContainer.appendChild(video);
             streamContainer.appendChild(statusOverlay);
@@ -2691,18 +2860,24 @@ class WebRTCSignalingClient {
     }
 
     async collectStats(cameraId) {
-        // Check regular peer connections, WHEP connections, and KVS connections
+        // Check regular peer connections, WHEP, WHIP, and KVS connections
         let peerConnection = this.peerConnections.get(cameraId);
         if (!peerConnection) {
             // Check if it's a WHEP connection
             const whepConnection = this.whepConnections.get(cameraId);
             if (whepConnection && whepConnection.pc) {
                 peerConnection = whepConnection.pc;
-            } else if (this.kvs.cameraId === cameraId && this.kvs.pc) {
-                // Check if it's a KVS connection
-                peerConnection = this.kvs.pc;
             } else {
-                return;
+                // Check if it's a WHIP connection
+                const whipConnection = this.whipConnections.get(cameraId);
+                if (whipConnection && whipConnection.pc) {
+                    peerConnection = whipConnection.pc;
+                } else if (this.kvs.cameraId === cameraId && this.kvs.pc) {
+                    // Check if it's a KVS connection
+                    peerConnection = this.kvs.pc;
+                } else {
+                    return;
+                }
             }
         }
 
@@ -3091,9 +3266,10 @@ class WebRTCSignalingClient {
         this.activeStreams.forEach(cameraId => {
             const stats = this.streamStats.get(cameraId);
 
-            // Check if it's a regular camera, WHEP connection, or KVS connection
+            // Check if it's a regular camera, WHEP, WHIP, or KVS connection
             let camera = this.cameras.get(cameraId);
             let isWhep = false;
+            let isWhip = false;
             let isKvs = false;
 
             if (!camera) {
@@ -3108,15 +3284,30 @@ class WebRTCSignalingClient {
                         streaming: true
                     };
                     isWhep = true;
-                } else if (this.kvs.cameraId === cameraId && this.kvs.state === 'connected') {
-                    // Create a camera-like object for KVS
-                    camera = {
-                        id: cameraId,
-                        streamId: this.streamElements.get(cameraId)?.querySelector('video')?.srcObject?.id || 'KVS',
-                        connected: true,
-                        streaming: true
-                    };
-                    isKvs = true;
+                } else {
+                    // Check if it's a WHIP connection
+                    const whipConnection = this.whipConnections.get(cameraId);
+                    if (whipConnection && whipConnection.state === 'connected') {
+                        // Create a camera-like object for WHIP
+                        // Use actual camera ID from connection
+                        const actualCameraId = whipConnection.cameraId || cameraId;
+                        camera = {
+                            id: actualCameraId,
+                            streamId: this.streamElements.get(cameraId)?.querySelector('video')?.srcObject?.id || 'WHIP',
+                            connected: true,
+                            streaming: true
+                        };
+                        isWhip = true;
+                    } else if (this.kvs.cameraId === cameraId && this.kvs.state === 'connected') {
+                        // Create a camera-like object for KVS
+                        camera = {
+                            id: cameraId,
+                            streamId: this.streamElements.get(cameraId)?.querySelector('video')?.srcObject?.id || 'KVS',
+                            connected: true,
+                            streaming: true
+                        };
+                        isKvs = true;
+                    }
                 }
             }
 
@@ -3133,12 +3324,13 @@ class WebRTCSignalingClient {
             statusDiv.className = 'floating-stats-camera-status';
 
             const titleContainer = document.createElement('div');
-            const streamType = isKvs ? 'AWS KVS' : (isWhep ? 'WHEP' : 'WebSocket');
-            const streamLabel = isKvs ? 'KVS Viewer' : (isWhep ? 'WHEP' : 'Camera');
+            const streamType = isKvs ? 'AWS KVS' : (isWhip ? 'WHIP' : (isWhep ? 'WHEP' : 'WebSocket'));
+            const streamLabel = isKvs ? 'KVS Viewer' : (isWhip ? 'WHIP' : (isWhep ? 'WHEP' : 'Camera'));
+            // Use camera.id which has the actual camera ID (not entry ID for WHIP)
             titleContainer.innerHTML = `
                 <div style="font-size: 14px; font-weight: bold;">${streamType} Stream</div>
                 <div style="font-size: 11px; color: #6c757d; margin-top: 2px;">
-                    ${streamLabel}: ${cameraId} | Stream: ${camera.streamId ? camera.streamId.substring(0, 8) + '...' : 'N/A'}
+                    ${streamLabel}: ${camera.id} | Stream: ${camera.streamId ? camera.streamId.substring(0, 8) + '...' : 'N/A'}
                 </div>
             `;
 

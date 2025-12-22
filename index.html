@@ -1027,17 +1027,17 @@
                         <div class="legend-title">WHIP Mode (Browser as Receiver)</div>
                         <div class="legend-item">
                             <span class="legend-color call"></span>
-                            <span class="legend-text">Connect - Browser waits for camera to POST WHIP offer to this endpoint</span>
+                            <span class="legend-text">Connect - Browser POSTs to device to tell it to start publishing</span>
                         </div>
                         <div class="legend-item">
                             <span class="legend-color hangup"></span>
-                            <span class="legend-text">Disconnect - Close WHIP session and stop receiving from camera</span>
+                            <span class="legend-text">Disconnect - Close WHIP session and stop receiving from device</span>
                         </div>
                         <div class="legend-item" style="margin-top: 8px; font-size: 0.85rem; color: #6c757d;">
-                            <strong>Flow:</strong> Camera → POST to WHIP URL → Server → Browser (answer) → Server → Camera
+                            <strong>Flow:</strong> Browser → POST device → Device → POST /{camera-id}/whip to server → Browser creates answer
                         </div>
                         <div class="legend-item" style="font-size: 0.85rem; color: #6c757d;">
-                            <strong>Note:</strong> Browser waits for all ICE candidates before sending answer (no trickle ICE)
+                            <strong>Note:</strong> Camera ID extracted from device endpoint URL. No trickle ICE - complete SDP with all candidates.
                         </div>
                     </div>
                 </div>

@@ -1,6 +1,32 @@
-# WebRTC Signaling Server
+# WebRTC Testing Application
 
-A robust WebRTC signaling server with automatic reconnection, ping/pong keepalive, and comprehensive video quality monitoring. Perfect for Android WebRTC applications and web clients.
+WebRTC signaling server with support for multiple signaling protocols. Provides tunneled control channel and peer-to-peer media connections for testing Android and web clients.
+
+## Architecture Overview
+
+This application uses a hybrid tunneling + peer-to-peer architecture:
+
+**Control Channel (via Tunnel)**: Browser connects to the device through an HTTP/WebSocket tunnel (ngrok, Cloudflare tunnel, or direct connection). All signaling, commands, and control messages flow through this tunnel to the device.
+
+**Media Channel (Peer-to-Peer)**: Once the WebRTC connection is established, video/audio streams flow directly between browser and device using WebRTC peer connections. Media bypasses the tunnel.
+
+The split allows control traffic to use the reliable tunnel while media uses WebRTC's NAT traversal with STUN/TURN servers configured in `config.js`.
+
+## Supported Signaling Protocols
+
+The server implements four signaling mechanisms:
+
+### 1. WebSocket Signaling
+Bidirectional WebSocket connection at the root endpoint. Clients identify themselves as 'web' or 'android' and exchange offer/answer/ICE candidates. The server relays messages between clients based on camera ID. Includes ping/pong keepalive with 30-second intervals.
+
+### 2. WHIP (WebRTC HTTP Ingestion Protocol)
+HTTP-based ingestion where devices POST SDP offers to `/cameraId/whip`. The server holds the HTTP connection open, forwards the offer to browsers via WebSocket, waits for the browser's answer, then returns it as the HTTP response. Session is terminated with DELETE to the same endpoint.
+
+### 3. WHEP (WebRTC HTTP Egress Protocol)
+Proxy endpoint at `/whep-proxy` that forwards browser requests to external WHEP servers. Browser includes target URL in `X-Target-URL` header. Server proxies the SDP exchange and returns the Location header for session management.
+
+### 4. AWS Kinesis Video Streams
+Endpoint at `/kvs/presign` generates SigV4-signed WebSocket URLs for KVS signaling channels. Server calls `GetSignalingChannelEndpoint` to discover the WSS endpoint, then presigns it with AWS credentials (from environment variables or request body). Client receives a presigned URL valid for specified duration (default 300 seconds).
 
 ## Quick Start
 
@@ -22,11 +48,13 @@ open http://localhost:8080
 
 ## Table of Contents
 
+- [Architecture Overview](#architecture-overview)
+- [Supported Signaling Protocols](#supported-signaling-protocols)
+- [Quick Start](#quick-start)
 - [Configuration](#configuration)
-- [ngrok Deployment](#ngrok-deployment)
+- [Tunnel Deployment (ngrok)](#tunnel-deployment-ngrok)
 - [Android Client Setup](#android-client-setup)
-- [Features](#features)
-- [Monitoring](#monitoring)
+- [Signaling Protocol Usage](#signaling-protocol-usage)
 - [Troubleshooting](#troubleshooting)
 - [API Reference](#api-reference)
 
@@ -73,11 +101,11 @@ const CONFIG = {
 | `WEBSOCKET.PING_INTERVAL` | `25000` | Ping interval (ms) |
 | `WEBSOCKET.CONNECTION_TIMEOUT` | `60000` | Connection timeout (ms) |
 
-## ngrok Deployment
+## Tunnel Deployment (ngrok)
 
-> **⚠️ Important Note for Company-Managed Computers:**
-> 
-> SentinelOne and other enterprise security software may block ngrok and put the executable in quarantine. This can also affect your IDE and terminal emulator. Consider using a personal device or cloud development environment.
+Tunneling provides HTTP/WebSocket access to the server from external networks. The tunnel carries control and signaling messages. WebRTC media flows peer-to-peer after connection is established.
+
+**Note:** Enterprise security software may quarantine ngrok. Alternatives include Cloudflare Tunnel, localtunnel, or direct port forwarding.
 
 ### Step 1: Install ngrok
 ```bash
@@ -155,67 +183,180 @@ class WebSocketSignalingClient(
 }
 ```
 
-## Troubleshooting
+## Signaling Protocol Usage
 
-### Common Issues
+### WebSocket Signaling
 
-#### 1. Connection Fails
-**Symptoms**: Status shows "Disconnected", no cameras appear
+Connect to the WebSocket endpoint and send an `identify` message. After identification, clients can register cameras and exchange WebRTC signaling messages. The server routes messages based on `cameraId`.
 
-**Solutions**:
-```bash
-# Check if server is running
-curl http://localhost:8080
+Flow:
+1. Connect to `ws://server:8080` or `wss://tunnel-url`
+2. Send `{"type": "identify", "clientType": "web"}` or `"android"`
+3. Android clients send `{"type": "register-camera", "cameraId": "camera-1"}`
+4. Clients exchange `offer`, `answer`, and `ice-candidate` messages with `cameraId` field
+5. Server forwards messages between matching clients
 
-# Verify WebSocket URL in config.js
-cat config.js | grep URL
-
-# Check ngrok is running
-ngrok status  # or check ngrok dashboard
+Example:
+```javascript
+const ws = new WebSocket('wss://your-tunnel-url');
+ws.send(JSON.stringify({
+    type: 'identify',
+    clientType: 'web'
+}));
 ```
 
-#### 2. Frequent Disconnections
-**Symptoms**: Connection drops every few minutes
+### WHIP
 
-**Solutions**:
-- Verify ping/pong is working (check logs)
-- Ensure ngrok is stable
-- Check network connectivity
-- Consider upgrading to ngrok Pro for better stability
+Device POSTs SDP offer to `/cameraId/whip` with `Content-Type: application/sdp`. The server generates a request ID, broadcasts the offer to all web clients via WebSocket, and waits up to 30 seconds for a browser to respond with `whip-answer`. The answer is returned as HTTP 201 with `Content-Type: application/sdp` and `Location` header.
 
-#### 3. Android App Not Connecting
-**Symptoms**: Android app shows connection errors
+Implementation details:
+- Server stores pending requests in `pendingWhipRequests` Map
+- Browser must be connected via WebSocket to receive `whip-offer` message
+- Browser responds with `{"type": "whip-answer", "requestId": "...", "answer": {...}}`
+- DELETE to same endpoint notifies browsers via `whip-delete` message
 
-**Solutions**:
-1. Verify URL format: `wss://` for HTTPS, `ws://` for HTTP
-2. Ensure ngrok URL is accessible from mobile network
-3. Test with web client first
+Example:
+```bash
+# POST offer
+curl -X POST https://tunnel-url/camera-1/whip \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp
 
-### Debug Mode
-Enable verbose logging in `config.js`:
+# Terminate session
+curl -X DELETE https://tunnel-url/camera-1/whip
+```
+
+### WHEP Proxy
+
+The `/whep-proxy` endpoint forwards requests to external WHEP servers. Client includes the target WHEP server URL in the `X-Target-URL` header. Server proxies the POST request with `Content-Type: application/sdp` and forwards back the status, headers (especially `Location`), and response body.
+
+DELETE requests work the same way - include target URL in `X-Target-URL` header.
+
+Example:
 ```javascript
-const CONFIG = {
-    DEV: {
-        VERBOSE_LOGGING: true,
-        SHOW_ALL_STATS: true
-    }
+const offer = await peerConnection.createOffer();
+await peerConnection.setLocalDescription(offer);
+
+const response = await fetch('https://tunnel-url/whep-proxy', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/sdp',
+        'X-Target-URL': 'https://external-whep-server.com/stream/id'
+    },
+    body: offer.sdp
+});
+
+const answerSdp = await response.text();
+const sessionLocation = response.headers.get('Location');
+```
+
+### AWS Kinesis Video Streams
+
+POST to `/kvs/presign` with channel details to get a presigned WSS URL. Server calls AWS `GetSignalingChannelEndpoint` API to discover the endpoint, then generates a SigV4-signed WebSocket URL valid for the specified duration.
+
+Required fields:
+- `region`: AWS region (e.g., 'us-west-2')
+- `channelArn`: Full ARN of KVS signaling channel
+- `clientId`: Unique client identifier
+- `expiresSeconds`: URL validity period (default 300)
+- `credentials`: Object with `accessKeyId`, `secretAccessKey`, optional `sessionToken`
+
+Server will use environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) if credentials not provided in request.
+
+Example:
+```javascript
+const response = await fetch('https://tunnel-url/kvs/presign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        region: 'us-west-2',
+        channelArn: 'arn:aws:kinesisvideo:us-west-2:123456789:channel/my-channel/1234567890',
+        clientId: 'browser-viewer-' + Date.now(),
+        expiresSeconds: 300,
+        credentials: {
+            accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+            secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+            sessionToken: 'optional-token'
+        }
+    })
+});
+
+const { url } = await response.json();
+// Use url to connect to KVS signaling channel
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+Check server is running:
+```bash
+curl http://localhost:8080
+```
+
+Verify WebSocket URL in `config.js` matches your tunnel or local IP.
+
+Test WebSocket connection:
+```bash
+wscat -c wss://your-ngrok-url.ngrok-free.app
+```
+
+Check server logs for connection events. Ping/pong keepalive runs every 30 seconds - connection times out after 60 seconds without activity.
+
+### WHIP Issues
+
+Device POST to `/whip` holds connection open for up to 30 seconds waiting for browser answer. Ensure:
+- Browser is connected via WebSocket before device POSTs
+- Content-Type is `application/sdp`
+- Browser handles `whip-offer` message and responds with `whip-answer`
+
+Check server logs for "WHIP POST request" and request ID matching.
+
+### WHEP/WHIP Proxy Issues
+
+Proxy forwards requests to external server. Check:
+- External server URL in `X-Target-URL` header is correct
+- Server can reach external endpoint (no firewall blocking)
+- External server accepts `Content-Type: application/sdp`
+
+Test external server directly:
+```bash
+curl -X POST https://external-server.com/endpoint \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp -v
+```
+
+### AWS KVS Issues
+
+Endpoint `/kvs/presign` calls AWS APIs with SigV4 signing. Check:
+- AWS credentials are valid (in request or environment variables)
+- IAM role has `kinesisvideo:GetSignalingChannelEndpoint` permission
+- Channel ARN and region are correct
+
+Test with AWS CLI:
+```bash
+aws kinesisvideo get-signaling-channel-endpoint \
+  --channel-arn "arn:aws:kinesisvideo:region:account:channel/name/id" \
+  --single-master-channel-endpoint-configuration Protocols=WSS,Role=VIEWER \
+  --region us-west-2
+```
+
+### WebRTC Media Issues
+
+If signaling succeeds but no media flows, check ICE connection state in browser console:
+```javascript
+peerConnection.oniceconnectionstatechange = () => {
+    console.log('ICE State:', peerConnection.iceConnectionState);
 };
 ```
 
-### Network Testing
-```bash
-# Test WebSocket connection
-wscat -c wss://your-ngrok-url.ngrok-free.app
-
-# Test HTTP endpoint
-curl -I https://your-ngrok-url.ngrok-free.app
-```
+Should transition: `new` → `checking` → `connected`. If stuck in `checking`, add TURN server to `config.js` ICE_SERVERS array. Behind symmetric NAT, STUN alone is insufficient.
 
 ## API Reference
 
-### WebSocket Messages
+### 1. WebSocket Signaling API
 
-#### Client → Server
+#### Client → Server Messages
 
 **Identify Client**
 ```json
@@ -229,6 +370,15 @@ curl -I https://your-ngrok-url.ngrok-free.app
 ```json
 {
     "type": "register-camera",
+    "cameraId": "camera-1",
+    "httpEndpoint": "https://device-tunnel-url" // Optional
+}
+```
+
+**Unregister Camera**
+```json
+{
+    "type": "unregister-camera",
     "cameraId": "camera-1"
 }
 ```
@@ -252,14 +402,15 @@ curl -I https://your-ngrok-url.ngrok-free.app
 }
 ```
 
-#### Server → Client
+#### Server → Client Messages
 
-**ICE Servers**
+**ICE Servers Configuration**
 ```json
 {
     "type": "ice-servers",
     "iceServers": [
-        { "urls": "stun:stun.l.google.com:19302" }
+        { "urls": "stun:stun.l.google.com:19302" },
+        { "urls": "turn:turn-server:3478", "username": "user", "credential": "pass" }
     ]
 }
 ```
@@ -267,7 +418,7 @@ curl -I https://your-ngrok-url.ngrok-free.app
 **Camera Events**
 ```json
 {
-    "type": "register-camera" | "camera-disconnected",
+    "type": "register-camera" | "camera-disconnected" | "unregister-camera",
     "cameraId": "camera-1"
 }
 ```
@@ -278,5 +429,172 @@ curl -I https://your-ngrok-url.ngrok-free.app
     "type": "call-request" | "hang-up",
     "cameraId": "camera-1",
     "fromClient": "client-123"
+}
+```
+
+**WHIP Offer (to Browser)**
+```json
+{
+    "type": "whip-offer",
+    "cameraId": "camera-1",
+    "requestPath": "/camera-1/whip",
+    "offer": { "type": "offer", "sdp": "..." },
+    "requestId": "abc123..."
+}
+```
+
+**WHIP Delete Notification**
+```json
+{
+    "type": "whip-delete",
+    "cameraId": "camera-1",
+    "requestPath": "/camera-1/whip"
+}
+```
+
+### 2. WHIP HTTP API
+
+#### POST /cameraId/whip
+Device publishes stream by posting SDP offer. The URL format is `hostname:port/cameraId/whip` where `cameraId` is your camera identifier (e.g., `camera-1`).
+
+**Request:**
+```http
+POST /camera-1/whip HTTP/1.1
+Content-Type: application/sdp
+
+v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+s=-
+...
+```
+
+**Response (201 Created):**
+```http
+HTTP/1.1 201 Created
+Content-Type: application/sdp
+Location: /camera-1/whip
+
+v=0
+o=- 987654321 2 IN IP4 127.0.0.1
+s=-
+...
+```
+
+#### DELETE /cameraId/whip
+Terminate WHIP session. Uses same URL format: `hostname:port/cameraId/whip`.
+
+**Request:**
+```http
+DELETE /camera-1/whip HTTP/1.1
+```
+
+**Response:**
+```http
+HTTP/1.1 200 OK
+```
+
+### 3. WHEP Proxy API
+
+#### POST /whep-proxy
+Proxy request to external WHEP server.
+
+**Request:**
+```http
+POST /whep-proxy HTTP/1.1
+Content-Type: application/sdp
+X-Target-URL: https://external-whep-server.com/stream/abc123
+
+v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+...
+```
+
+**Response:**
+```http
+HTTP/1.1 201 Created
+Content-Type: application/sdp
+Location: https://external-whep-server.com/stream/abc123/session/xyz
+
+v=0
+o=- 987654321 2 IN IP4 127.0.0.1
+...
+```
+
+#### DELETE /whep-proxy
+Terminate WHEP session on external server.
+
+**Request:**
+```http
+DELETE /whep-proxy HTTP/1.1
+X-Target-URL: https://external-whep-server.com/stream/abc123/session/xyz
+```
+
+### 4. WHIP Proxy API
+
+#### POST /whip-proxy
+Proxy request to external WHIP server (for publishing).
+
+**Request:**
+```http
+POST /whip-proxy HTTP/1.1
+Content-Type: application/sdp
+X-Target-URL: https://external-whip-server.com/publish/stream123
+
+v=0
+o=- 123456789 2 IN IP4 127.0.0.1
+...
+```
+
+**Response:**
+```http
+HTTP/1.1 201 Created
+Content-Type: application/sdp
+Location: https://external-whip-server.com/publish/stream123/session/xyz
+
+v=0
+o=- 987654321 2 IN IP4 127.0.0.1
+...
+```
+
+#### DELETE /whip-proxy
+Terminate WHIP session on external server.
+
+**Request:**
+```http
+DELETE /whip-proxy HTTP/1.1
+X-Target-URL: https://external-whip-server.com/publish/stream123/session/xyz
+```
+
+### 5. AWS KVS API
+
+#### POST /kvs/presign
+Generate presigned WSS URL for KVS signaling channel.
+
+**Request:**
+```json
+{
+    "region": "us-west-2",
+    "channelArn": "arn:aws:kinesisvideo:us-west-2:123456789:channel/my-channel/1234567890",
+    "clientId": "browser-viewer-123",
+    "expiresSeconds": 300,
+    "credentials": {
+        "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
+        "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "sessionToken": "optional-session-token"
+    }
+}
+```
+
+**Response:**
+```json
+{
+    "url": "wss://kinesisvideo.us-west-2.amazonaws.com/?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=..."
+}
+```
+
+**Error Response (400/500):**
+```json
+{
+    "error": "Missing required fields: region, channelArn, clientId"
 }
 ```

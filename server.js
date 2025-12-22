@@ -10,7 +10,27 @@ const app = express();
 
 // Serve static files (HTML, CSS, JS)
 app.use(express.static(path.join(__dirname, '.')));
-app.use(express.json({ limit: '1mb' }));
+
+// Middleware to handle different content types
+app.use((req, res, next) => {
+    const contentType = req.headers['content-type'];
+    
+    // Handle application/sdp as raw text
+    if (contentType && contentType.includes('application/sdp')) {
+        let data = '';
+        req.setEncoding('utf8');
+        req.on('data', chunk => {
+            data += chunk;
+        });
+        req.on('end', () => {
+            req.body = data;
+            next();
+        });
+    } else {
+        // Use JSON parser for other content types
+        express.json({ limit: '1mb' })(req, res, next);
+    }
+});
 
 // Simple helper to create SigV4 presigned KVS WSS URL using provided credentials or IAM role on server
 // This endpoint mirrors the Kotlin logic in KvsSignaler.kt (GetSignalingChannelEndpoint + presign)
@@ -159,47 +179,47 @@ function sha256Hex(buf) { return crypto.createHash('sha256').update(buf).digest(
 
 // WHIP Endpoints - Browser acts as WHIP server (receiver)
 // Store pending WHIP requests waiting for browser answer
-const pendingWhipRequests = new Map(); // requestId -> { res, timeout }
-// Store mapping of endpoint paths to browser entry IDs
-const whipEndpointMap = new Map(); // path -> { entryId, url, token }
+const pendingWhipRequests = new Map(); // requestId -> { resolve, reject, timeout, cameraId }
 
-// POST /:cameraId/whip - Camera posts SDP offer here
+// POST /:cameraId/whip - Device posts SDP offer here (server always listens)
 app.post('/:cameraId/whip', async (req, res) => {
     try {
         const cameraId = req.params.cameraId;
         const requestPath = `/${cameraId}/whip`;
         
         log(`WHIP POST request to path: ${requestPath}`);
-        
-        // Look up which browser entry is listening on this path
-        const endpointInfo = whipEndpointMap.get(requestPath);
-        if (!endpointInfo) {
-            log(`  → No browser listening on this endpoint`);
-            return res.status(404).send('No browser listening on this endpoint');
-        }
-        
-        const { entryId, url: storedUrl, token: storedToken } = endpointInfo;
+        log(`  → Content-Type: ${req.headers['content-type']}`);
+        log(`  → Body type: ${typeof req.body}`);
+        log(`  → Body is Buffer: ${Buffer.isBuffer(req.body)}`);
+        log(`  → Body keys: ${typeof req.body === 'object' && req.body ? Object.keys(req.body).join(', ') : 'N/A'}`);
+        log(`  → Raw body preview: ${JSON.stringify(req.body).substring(0, 200)}`);
         
         // SDP offer should be in the body as application/sdp or parsed from JSON
         let offer;
-        if (req.headers['content-type'] === 'application/sdp') {
+        if (req.headers['content-type'] === 'application/sdp' || req.headers['content-type']?.includes('application/sdp')) {
+            log(`  → Parsing as SDP (Content-Type: application/sdp)`);
+            const sdpBody = typeof req.body === 'string' ? req.body : req.body.toString();
             offer = {
                 type: 'offer',
-                sdp: req.body.toString()
+                sdp: sdpBody
             };
-        } else if (req.body.sdp) {
+            log(`  → SDP length: ${offer.sdp.length}`);
+        } else if (req.body && req.body.sdp) {
+            log(`  → Parsing as JSON with sdp field`);
             offer = req.body;
+            log(`  → SDP length: ${offer.sdp.length}`);
         } else {
+            log(`  → ERROR: Missing SDP offer in body`);
+            log(`  → Body content: ${JSON.stringify(req.body)}`);
             return res.status(400).send('Missing SDP offer');
         }
 
         const requestId = crypto.randomBytes(16).toString('hex');
         
-        log(`  → Entry ID: ${entryId}`);
         log(`  → Request ID: ${requestId}`);
-        log(`  → Stored URL: ${storedUrl || 'N/A'}`);
-        log(`  → Stored Token: ${storedToken ? '***' : 'N/A'}`);
+        log(`  → Offer type: ${offer.type}`);
         log(`  → SDP length: ${offer.sdp ? offer.sdp.length : 0}`);
+        log(`  → SDP preview: ${offer.sdp ? offer.sdp.substring(0, 100) + '...' : 'N/A'}`);
 
         // Create promise that will be resolved when browser sends answer
         const answerPromise = new Promise((resolve, reject) => {
@@ -212,34 +232,35 @@ app.post('/:cameraId/whip', async (req, res) => {
                 resolve,
                 reject,
                 timeout,
-                res
+                cameraId: cameraId
             });
         });
 
-        // Forward offer to browser via WebSocket
+        // Broadcast offer to all connected browsers (they'll match by cameraId/path)
         sendToWebClients({
             type: 'whip-offer',
-            entryId: entryId,
+            cameraId: cameraId,
+            requestPath: requestPath,
             offer: offer,
-            url: storedUrl,
-            token: storedToken,
             requestId: requestId
         });
 
-        log(`  → Offer forwarded to browser, waiting for answer...`);
+        log(`  → Offer broadcast to all browsers, waiting for answer (with all ICE candidates)...`);
 
         // Wait for answer from browser
         try {
             const answer = await answerPromise;
             
-            log(`  → Received answer from browser for entry ${entryId}`);
+            log(`  → Received answer from browser for camera ${cameraId}`);
+            log(`  → Answer SDP length: ${answer.sdp ? answer.sdp.length : 0}`);
+            log(`  → Answer SDP preview: ${answer.sdp ? answer.sdp.substring(0, 100) + '...' : 'N/A'}`);
             
-            // Send answer back to camera as SDP
+            // Send answer back to device as SDP
             res.setHeader('Content-Type', 'application/sdp');
             res.setHeader('Location', requestPath); // WHIP spec - location for DELETE
             res.status(201).send(answer.sdp);
             
-            log(`  → Answer sent to camera`);
+            log(`  → HTTP 201 response sent to device with SDP answer`);
         } catch (error) {
             log(`  → Error: ${error.message}`);
             res.status(500).send(error.message);
@@ -250,7 +271,7 @@ app.post('/:cameraId/whip', async (req, res) => {
     }
 });
 
-// DELETE /:cameraId/whip - Camera terminates WHIP session
+// DELETE /:cameraId/whip - Device terminates WHIP session
 app.delete('/:cameraId/whip', (req, res) => {
     try {
         const cameraId = req.params.cameraId;
@@ -258,22 +279,14 @@ app.delete('/:cameraId/whip', (req, res) => {
         
         log(`WHIP DELETE request to path: ${requestPath}`);
 
-        // Look up which browser entry is listening on this path
-        const endpointInfo = whipEndpointMap.get(requestPath);
-        if (!endpointInfo) {
-            log(`  → No browser listening on this endpoint (already cleaned up?)`);
-            return res.status(200).send('OK');
-        }
-
-        const { entryId } = endpointInfo;
-
-        // Notify browser to close the session
+        // Broadcast delete to all browsers (they'll match by cameraId/path)
         sendToWebClients({
             type: 'whip-delete',
-            entryId: entryId
+            cameraId: cameraId,
+            requestPath: requestPath
         });
 
-        log(`  → Delete notification sent to browser for entry ${entryId}`);
+        log(`  → Delete notification broadcast to all browsers`);
         res.status(200).send('OK');
     } catch (error) {
         log(`WHIP DELETE error: ${error.message}`);
@@ -647,17 +660,11 @@ function handleMessage(clientId, message) {
         case 'ice-candidate':
             handleIceCandidate(clientId, message);
             break;
-        case 'whip-listen':
-            handleWhipListen(clientId, message);
-            break;
         case 'whip-answer':
             handleWhipAnswer(clientId, message);
             break;
         case 'whip-error':
             handleWhipError(clientId, message);
-            break;
-        case 'whip-stop':
-            handleWhipStop(clientId, message);
             break;
         default:
             log(`Unknown message type from ${clientId}: ${message.type}`);
@@ -949,56 +956,32 @@ function handleIceCandidate(clientId, message) {
     }
 }
 
-function handleWhipListen(clientId, message) {
-    const { entryId, endpointUrl, url, token } = message;
-    
-    // Extract path from full URL
-    let path;
-    try {
-        const urlObj = new URL(endpointUrl);
-        path = urlObj.pathname;
-    } catch (e) {
-        // If not a full URL, assume it's already a path
-        path = endpointUrl;
-    }
-    
-    log(`Web client ${clientId} started listening on WHIP endpoint`);
-    log(`  → Entry ID: ${entryId}`);
-    log(`  → Path: ${path}`);
-    log(`  → URL metadata: ${url || 'none'}`);
-    log(`  → Token: ${token ? '***' : 'none'}`);
-    
-    // Store the endpoint mapping
-    whipEndpointMap.set(path, {
-        entryId: entryId,
-        url: url || null,
-        token: token || null,
-        clientId: clientId
-    });
-    
-    log(`  → Endpoint registered and ready to receive camera POST`);
-}
-
 function handleWhipAnswer(clientId, message) {
-    const { requestId, answer } = message;
+    const { cameraId, requestId, answer } = message;
     
     log(`Received WHIP answer from browser for request ${requestId}`);
+    log(`  → Camera ID: ${cameraId}`);
+    log(`  → Answer type: ${answer.type}`);
+    log(`  → Answer SDP length: ${answer.sdp ? answer.sdp.length : 0}`);
     
     const pending = pendingWhipRequests.get(requestId);
     if (pending) {
         clearTimeout(pending.timeout);
         pending.resolve(answer);
         pendingWhipRequests.delete(requestId);
-        log(`  → Answer resolved and forwarded to camera`);
+        log(`  → Answer resolved and will be forwarded to device ${cameraId}`);
     } else {
         log(`  → Warning: No pending request found for ${requestId}`);
     }
 }
 
 function handleWhipError(clientId, message) {
-    const { requestId, error } = message;
+    const { cameraId, requestId, error } = message;
     
     log(`Received WHIP error from browser for request ${requestId}: ${error}`);
+    if (cameraId) {
+        log(`  → Camera ID: ${cameraId}`);
+    }
     
     const pending = pendingWhipRequests.get(requestId);
     if (pending) {
@@ -1006,27 +989,6 @@ function handleWhipError(clientId, message) {
         pending.reject(new Error(error));
         pendingWhipRequests.delete(requestId);
     }
-}
-
-function handleWhipStop(clientId, message) {
-    const { entryId, endpointUrl } = message;
-    
-    // Extract path from URL
-    let path;
-    try {
-        const urlObj = new URL(endpointUrl);
-        path = urlObj.pathname;
-    } catch (e) {
-        path = endpointUrl;
-    }
-    
-    log(`Web client ${clientId} stopped WHIP endpoint for entry ${entryId}`);
-    log(`  → Path: ${path}`);
-    
-    // Remove from endpoint map
-    whipEndpointMap.delete(path);
-    
-    log(`  → Endpoint unregistered`);
 }
 
 function generateClientId() {
